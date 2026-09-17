@@ -25,6 +25,10 @@ export default async function AnalyticsPage() {
     <main className="flex flex-1 flex-col px-4 py-10">
       <div className="mx-auto w-full max-w-3xl">
         <h1 className="mb-1 text-2xl font-semibold text-text">Analytics</h1>
+        <p className="text-sm text-text-muted">
+          Click data is processed asynchronously by a background worker, so it may lag behind real
+          clicks by a few minutes.
+        </p>
         <p className="mb-8 text-sm text-text-muted">{formatFreshness(analytics.lastDrainedAt)}</p>
 
         <div className="mb-8 border border-border p-4">
