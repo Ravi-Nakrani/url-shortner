@@ -10,7 +10,7 @@ export interface ILink {
 
 const LinkSchema = new Schema<ILink>({
   shortCode: { type: String, required: true, unique: true },
-  longUrl: { type: String, required: true },
+  longUrl: { type: String, required: true, index: true },
   createdAt: { type: Date, default: Date.now },
   userId: { type: String, default: null },
   expiresAt: { type: Date, default: null },
