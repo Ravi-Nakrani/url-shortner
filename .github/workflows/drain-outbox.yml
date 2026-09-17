@@ -1,0 +1,16 @@
+name: Drain Outbox
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call process-outbox endpoint
+        run: |
+          curl -sf -X POST "${{ secrets.APP_URL }}/api/process-outbox" \
+            -H "x-outbox-secret: ${{ secrets.OUTBOX_SECRET }}" \
+            -w "\nHTTP %{http_code}\n"

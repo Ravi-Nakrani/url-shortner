@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const envSchema = z.object({
   MONGODB_URI: z.string().url({ message: "MONGODB_URI must be a valid connection string" }),
+  OUTBOX_SECRET: z.string().min(16, { message: "OUTBOX_SECRET must be at least 16 characters" }),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 });
 

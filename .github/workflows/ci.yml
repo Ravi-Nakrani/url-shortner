@@ -25,7 +25,8 @@ jobs:
 
       - name: Test
         env:
-          # A dummy value so env.ts validation passes in CI — no real DB is
-          # contacted by the unit tests in this phase.
+          # Dummy values so env.ts validation passes in CI — no real DB is
+          # contacted by the unit tests (models/services are mocked).
           MONGODB_URI: mongodb://localhost:27017/ci-placeholder
+          OUTBOX_SECRET: ci-placeholder-secret-value
         run: npm test

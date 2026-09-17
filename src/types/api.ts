@@ -15,3 +15,9 @@ export interface ApiErrorResponse {
     code: string;
   };
 }
+
+export interface ProcessOutboxResponse {
+  processedCount: number;
+  groupsUpdated: number;
+  tookMs: number;
+}

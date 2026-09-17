@@ -185,3 +185,103 @@ lost or duplicated: 15/20-request concurrent bursts against the same and differe
 short codes each produced exactly one outbox document per request, and hitting a
 nonexistent short code (404) produces zero outbox documents, since there's no click to
 record without a resolved destination.
+
+---
+
+## Phase 3
+
+### Two rollup collections instead of one document with a nested referrer map
+
+**Chosen**: `click_stats` (`{shortCode, date, clicks}`, one document per link per day)
+and `referrer_stats` (`{shortCode, date, referrer, count}`, one document per
+link-per-day-per-referrer) as two separate collections, rather than a single
+`click_stats` document per `{shortCode, date}` with a `referrers: { [host]: count }`
+nested map.
+
+**Why**: the drain increments counts via MongoDB's raw `$inc` with a dot-separated field
+path. A dynamic map key containing dots — which is nearly every hostname
+(`www.google.com`) — gets parsed by MongoDB as nested-field separators in an update
+path, silently producing the wrong document shape instead of incrementing a flat key. A
+separate collection with `referrer` as an ordinary field _value_ (not a dynamic key)
+avoids the problem entirely, and as a side benefit makes Phase 6's "top referrers" query
+a plain `find({shortCode, date}).sort({count: -1})` instead of needing to unpack and
+sort a nested map client-side.
+
+### Collection naming aligned with the spec (`outbox_events`, not `outboxevents`)
+
+**Chosen**: `OutboxEvent`'s schema now explicitly sets `{ collection: "outbox_events" }`
+(previously left to Mongoose's default lowercased-pluralized naming, which produced
+`outboxevents`); the two new models explicitly name their collections `click_stats` and
+`referrer_stats` for the same reason.
+
+**Why**: matches the master spec's own naming convention and makes the collection list
+in Atlas's UI legible against the spec rather than requiring a mental translation. This
+was a small breaking change to already-deployed Phase 2 code — the only data affected
+was this project's own manual test clicks, so the rename was made outright rather than
+adding a migration step for data that didn't need preserving.
+
+### Processed outbox events are kept (`processed: true`), not deleted
+
+**Chosen**: after aggregating, events are marked `processed: true` rather than removed
+from the collection.
+
+**Why**: preserves the raw per-click record (exact timestamp, referrer, user agent) for
+later reprocessing if the aggregation logic changes or had a bug, and for any future
+feature needing raw event detail — at negligible storage cost for a portfolio-scale
+project on Atlas's 512MB M0 tier. The accepted tradeoff: `outbox_events` grows without
+bound over the project's lifetime. **What I'd add at scale**: a TTL index expiring
+_processed_ events after a retention window (e.g. 30 days) once the aggregates are
+trusted — bounding storage without touching the hot redirect path, implemented as a
+background index rather than application code.
+
+### Transactional aggregate-and-mark-processed
+
+**Chosen**: the drain's two rollup `bulkWrite`s and the `OutboxEvent.updateMany` that
+marks the batch processed all run inside one MongoDB multi-document transaction
+(`mongoose.startSession()` + `session.withTransaction()`).
+
+**Why**: without a transaction, a crash or network error between "write the rollups"
+and "mark the batch processed" would leave those events aggregated _and_ still
+`processed: false` — the next drain run would fetch and aggregate the same batch again,
+double-counting those clicks. Atlas's M0 free tier runs as a replica set, which is all
+multi-document transactions require — so this isn't a paid-tier-only feature being
+skipped for cost reasons, it's genuinely available here. Wrapping the batch in a
+transaction is a small, contained change (one session, one `withTransaction` closure)
+that eliminates an entire class of double-counting bugs, which is a good trade for the
+added code.
+
+### In-memory grouping before writing
+
+**Chosen**: the drain groups a batch's raw events by `(shortCode, date)` and
+`(shortCode, date, referrer)` in memory first, then issues one `bulkWrite` per
+collection containing one `updateOne` per distinct group — rather than issuing one
+database write per raw event.
+
+**Why**: a batch of 200 raw click events for a handful of popular links collapses into
+a much smaller number of distinct group combinations; grouping first means the number
+of database round-trips scales with distinct `(link, day[, referrer])` combinations in
+the batch, not with the batch size itself.
+
+### GitHub Actions schedule: every 5 minutes, not more frequent
+
+**Chosen**: the drain workflow's cron schedule is `*/5 * * * *`, the least-frequent end
+of the master spec's allowed "every 1-5 minutes" range.
+
+**Why**: GitHub's own documentation for scheduled workflows notes that schedules more
+frequent than 5 minutes aren't reliably honored — they can be delayed or silently
+skipped under platform load. 5 minutes is the point in the spec's allowed range that's
+actually dependable rather than aspirational. `workflow_dispatch` is also enabled on the
+workflow so a drain can be triggered on demand (used during this phase's manual review)
+without waiting on the schedule.
+
+### Verified against the real database
+
+- Auth: a missing or incorrect `x-outbox-secret` header returns `401` with no writes.
+- A batch of 6 real clicks (via actual redirects, 3 referrers) drained into exactly the
+  expected `click_stats`/`referrer_stats` documents and counts.
+- Re-running the drain against an empty backlog returned in ~14ms and performed zero
+  writes.
+- 250 events seeded directly into `outbox_events`: a single drain call processed
+  exactly 200 (the batch cap) and left 50 unprocessed; a second call drained the
+  remaining 50 — confirming the batch cap actually bounds work per invocation rather
+  than draining to completion.
