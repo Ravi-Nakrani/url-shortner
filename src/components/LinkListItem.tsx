@@ -18,6 +18,18 @@ export function LinkListItem({
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/${link.shortCode}`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API can be unavailable (e.g. insecure context); silently no-op —
+      // the user can still select and copy the link text manually.
+    }
+  }
 
   async function handleSave() {
     setError(null);
@@ -61,7 +73,27 @@ export function LinkListItem({
   return (
     <li className="flex flex-col gap-2 py-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-mono text-accent">{link.shortCode}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <a
+            href={`/${link.shortCode}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-mono text-accent underline decoration-2 underline-offset-4 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            {link.shortCode}
+            <span className="sr-only"> (opens in a new tab)</span>
+          </a>
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="rounded border border-border px-2 py-0.5 text-xs font-medium text-text-muted transition-colors hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+          <span className="sr-only" role="status" aria-live="polite">
+            {copied ? "Short link copied to clipboard" : ""}
+          </span>
+        </div>
         <div className="flex gap-3 text-sm">
           <button
             type="button"
