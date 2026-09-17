@@ -603,3 +603,53 @@ much as this phase's read path simply respecting a boundary Phase 5 already drew
   `outbox_events` — the analytics read path's latency is structurally independent of
   outbox backlog size by construction, not just by observation (there is no code path
   from this phase that could touch the outbox collection at all).
+
+---
+
+## Testing & Reliability Pass
+
+A later audit reviewed the whole test suite against the business logic it should be
+protecting, rather than chasing a coverage percentage. Short-code generation, collision
+handling, URL validation, link creation/dedupe, ownership-scoped update/delete, rate
+limiting, click-event writes, outbox draining (including the concurrent-drain lock
+above), and analytics aggregation already had solid unit coverage. Three real gaps were
+found and closed, all at the HTTP-route level rather than the service level, since that's
+where the remaining untested behavior actually lived:
+
+### The redirect route itself had zero tests
+
+`GET /[shortCode]` is the single most-hit endpoint in the app, and the service functions
+it calls were tested — but the route's own behavior (which status code it actually
+returns, whether a lookup failure still produces a redirect-shaped response, whether a
+failed click-tracking write is swallowed rather than failing the redirect) had never been
+exercised directly. Added `tests/redirectRoute.test.ts`, invoking the route's exported
+`GET` handler directly with a real `NextRequest` and mocked services. This is what
+actually caught and pinned down the 302-vs-301 behavior and the styled-404-vs-raw-JSON
+behavior as regression-proof, rather than relying on manual `curl` checks each time.
+
+### Ownership enforcement was only proven at the service layer, not the route
+
+`updateLink`/`deleteLink` were already tested to throw `LinkNotFoundError` for a
+mismatched owner, and the route was already written to map that to a plain `404`. But
+nothing tested the route's own wiring — that it actually reads `session.user.id` and
+passes it through, that an unauthenticated request is rejected before touching the
+database at all, and that the 404-not-403 response shape is what actually comes back
+over HTTP. Added `tests/linkOwnershipRoutes.test.ts` covering `PATCH`/`DELETE
+/api/links/[shortCode]` end to end: no-session → 401 with zero DB calls, wrong owner →
+plain 404, validation failure → 400 before any service call, and a passing case
+asserting the authenticated user's own id is what gets passed down.
+
+### The auth callbacks — what ownership fundamentally rests on — were untested
+
+`src/auth.ts`'s `jwt`/`session` callbacks (copying the GitHub account id onto the JWT,
+then onto `session.user.id`) were previously defined inline inside the `NextAuth(...)`
+call, which made them impossible to unit test without a real OAuth round trip. Pulled
+them out into two named, individually exported functions (`jwtCallback`,
+`sessionCallback`), typed via `NonNullable<NextAuthConfig["callbacks"]>["jwt" | "session"]`
+so they stay exactly as type-safe as the inline versions were — then passed into the
+same `callbacks` object by reference, so runtime behavior is unchanged. Added
+`tests/auth.test.ts` covering both. This is the one small structural change in this
+pass; everything else added tests around existing code untouched.
+
+**Result**: 76 tests across 10 files (up from 56 across 7), all passing; typecheck, lint,
+and build all clean. No existing test was weakened or removed to get there.
