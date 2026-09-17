@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
 import { AuthStatus } from "@/components/AuthStatus";
@@ -14,9 +14,34 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const description =
+  "Shorten a link and track every click. Durable click tracking, async analytics, and authenticated link ownership.";
+
 export const metadata: Metadata = {
-  title: "URL Shortener",
-  description: "A URL shortener with click analytics.",
+  metadataBase: new URL("https://url-shortner-ravi-nakrani.vercel.app"),
+  title: {
+    default: "URL Shortener",
+    template: "%s | URL Shortener",
+  },
+  description,
+  openGraph: {
+    title: "URL Shortener",
+    description,
+    type: "website",
+    siteName: "URL Shortener",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "URL Shortener",
+    description,
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#faf9f6" },
+    { media: "(prefers-color-scheme: dark)", color: "#14151a" },
+  ],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -157,6 +157,15 @@ A small helper (`apiError(status, code, message)`) that returns a `NextResponse.
 1. Look up `Link` by `shortCode`.
 2. Not found → `404` (a simple text/JSON response is fine in this phase; a styled 404 page is not required by the checkpoint).
 3. Found → `NextResponse.redirect(longUrl, 301)`. **Using 301 (permanent)**, since a given short code always maps to the same destination for its lifetime, which is the more semantically correct status and also more cacheable — matches the "well-defended decision" standard for the interview. (Open question 4 below asks you to confirm this over 302.)
+
+   > **Later revised to 302** — this plan's reasoning about cacheability turned out to be
+   > incomplete: it never considered that a browser-cached 301 means a returning
+   > visitor's repeat clicks stop reaching the server at all, silently undercounting the
+   > app's own click analytics. See [DECISIONS.md](DECISIONS.md#redirect-status-code-302-temporary-revised-from-an-earlier-301)
+   > for the full reasoning behind the reversal. Kept here rather than edited away,
+   > since getting this wrong first and correcting it later is a more honest record than
+   > pretending the plan always said 302.
+
 4. `expiresAt` check: if set and in the past, treat as not found (`404`) rather than redirecting — this is a natural fit here since the field already exists on the schema, even though full expiry _management_ UI isn't built until Phase 5.
 
 ---

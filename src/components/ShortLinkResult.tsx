@@ -26,6 +26,7 @@ export function ShortLinkResult({ shortUrl, onReset }: { shortUrl: string; onRes
         className="mb-4 block break-all font-mono text-xl font-semibold text-accent underline decoration-2 underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         {shortUrl}
+        <span className="sr-only"> (opens in a new tab)</span>
       </a>
       <div className="flex flex-wrap items-center gap-3">
         <button
@@ -44,7 +45,7 @@ export function ShortLinkResult({ shortUrl, onReset }: { shortUrl: string; onRes
           rel="noopener noreferrer"
           className="rounded border border-border px-3 py-1.5 text-sm font-medium text-text transition-colors hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
-          Open
+          Open<span className="sr-only"> (opens in a new tab)</span>
         </a>
       </div>
       <button

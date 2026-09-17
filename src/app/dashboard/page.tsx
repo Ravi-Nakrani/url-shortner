@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import type { Metadata } from "next";
 import { auth } from "@/auth";
 import { connectToDatabase } from "@/lib/db/connect";
 import { listLinksForUser } from "@/lib/services/linkService";
 import { getAnalyticsForUser } from "@/lib/services/analyticsService";
 import { LinkList } from "@/components/LinkList";
 import type { LinkSummaryResponse } from "@/types/api";
+
+export const metadata: Metadata = { title: "My Links" };
 
 export default async function DashboardPage() {
   const session = await auth();

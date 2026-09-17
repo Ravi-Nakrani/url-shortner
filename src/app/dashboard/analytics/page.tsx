@@ -1,10 +1,13 @@
 import { redirect } from "next/navigation";
+import type { Metadata } from "next";
 import { auth } from "@/auth";
 import { connectToDatabase } from "@/lib/db/connect";
 import { getAnalyticsForUser } from "@/lib/services/analyticsService";
 import { ClicksOverTimeChart } from "@/components/analytics/ClicksOverTimeChart";
 import { TopReferrersList } from "@/components/analytics/TopReferrersList";
 import { LinkBreakdownTable } from "@/components/analytics/LinkBreakdownTable";
+
+export const metadata: Metadata = { title: "Analytics" };
 
 function formatFreshness(lastDrainedAt: string | null): string {
   if (!lastDrainedAt) return "Data current as of: not yet available (no drain has run)";

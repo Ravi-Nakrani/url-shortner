@@ -141,6 +141,11 @@ export const updateLinkSchema = z.object({
 
 GitHub OAuth Apps only support a single callback URL each, so **two separate OAuth Apps are needed** — one for local dev, one for production:
 
+> **What actually happened**: only the production OAuth App was ever registered. Local
+> sign-in was consciously deferred rather than blocking on a second app — see
+> "[GitHub OAuth Apps only support one callback URL each — two apps, not one](DECISIONS.md#github-oauth-apps-only-support-one-callback-url-each--two-apps-not-one)"
+> in DECISIONS.md for the tradeoff and how the deployed flow was verified instead.
+
 1. GitHub → Settings → Developer settings → OAuth Apps → New OAuth App, twice:
    - **Dev app**: Homepage URL `http://localhost:3000`, Authorization callback URL `http://localhost:3000/api/auth/callback/github`.
    - **Prod app**: Homepage URL your Vercel URL, Authorization callback URL `https://<your-vercel-domain>/api/auth/callback/github`.
