@@ -31,7 +31,7 @@ export async function GET(
       console.error(`[outbox] failed to record click for ${shortCode}`, error);
     }
 
-    return NextResponse.redirect(link.longUrl, 301);
+    return NextResponse.redirect(link.longUrl, 302);
   } catch (error) {
     console.error("[redirect] failed to resolve short code", error);
     return apiError(500, "INTERNAL_ERROR", "Something went wrong. Please try again.");

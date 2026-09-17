@@ -107,17 +107,22 @@ redirect's critical path entirely.
 
 ## Phase 1
 
-### Redirect status code: 301 (permanent)
+### Redirect status code: 302 (temporary), revised from an earlier 301
 
-**Chosen**: `GET /[shortCode]` issues a `301 Moved Permanently` redirect, not `302`.
+**Chosen**: `GET /[shortCode]` issues a `302 Found` redirect, not `301`.
 
-**Why**: a given short code maps to exactly one destination for its entire lifetime in
-this design (links aren't edited in place), so 301 is the semantically correct status
-and is more cacheable by browsers/CDNs. The tradeoff, worth being able to explain: if a
-future feature ever let a link's destination be changed after creation, a 301 previously
-cached by a visitor's browser could keep sending them to the old destination even after
-the database is updated — 302 would avoid that at the cost of every hit re-checking with
-the server. Since links are immutable here, 301 is the right choice for this design.
+**Why**: this reverses an earlier decision in this same phase to use `301 Moved
+Permanently`. The original reasoning — a short code maps to exactly one destination for
+its entire lifetime, so 301 is semantically correct and more cacheable — only weighed the
+redirect in isolation and missed its interaction with click analytics, the project's
+headline feature. A 301 is aggressively cached by browsers: once a visitor's browser has
+cached the redirect, every _subsequent_ click from that browser never reaches the server
+again, so no outbox event is ever written for it. That silently undercounts real repeat
+traffic — the opposite of "durable click tracking." A 302 is not cached by default, so
+every click reaches the server and is recorded, at the cost of one extra DB lookup per
+redirect versus a browser-cached hit — a fully acceptable trade for a product whose value
+proposition is accurate click data. Links being immutable in this design is true but
+irrelevant to which status code serves the product's actual goal.
 
 ### Duplicate `longUrl` submissions return the existing short code
 
