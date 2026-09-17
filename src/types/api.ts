@@ -27,6 +27,7 @@ export interface LinkSummaryResponse {
   longUrl: string;
   createdAt: string;
   expiresAt: string | null;
+  totalClicks?: number;
 }
 
 export interface ListLinksResponse {

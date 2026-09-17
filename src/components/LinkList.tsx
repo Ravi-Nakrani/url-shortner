@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { LinkListItem } from "@/components/LinkListItem";
 import type { LinkSummaryResponse } from "@/types/api";
 
@@ -8,7 +9,11 @@ export function LinkList({ initialLinks }: { initialLinks: LinkSummaryResponse[]
   const [links, setLinks] = useState(initialLinks);
 
   function handleUpdated(oldShortCode: string, updated: LinkSummaryResponse) {
-    setLinks((prev) => prev.map((link) => (link.shortCode === oldShortCode ? updated : link)));
+    setLinks((prev) =>
+      prev.map((link) =>
+        link.shortCode === oldShortCode ? { ...updated, totalClicks: link.totalClicks } : link,
+      ),
+    );
   }
 
   function handleDeleted(shortCode: string) {
@@ -16,7 +21,14 @@ export function LinkList({ initialLinks }: { initialLinks: LinkSummaryResponse[]
   }
 
   if (links.length === 0) {
-    return <p className="text-text-muted">You haven&apos;t created any links yet.</p>;
+    return (
+      <div className="border border-border p-6 text-center">
+        <p className="text-text-muted">You haven&apos;t created any links yet.</p>
+        <Link href="/" className="mt-3 inline-block text-sm text-accent underline hover:opacity-80">
+          Shorten your first link
+        </Link>
+      </div>
+    );
   }
 
   return (

@@ -86,6 +86,8 @@ export function LinkListItem({
       <p className="text-xs text-text-muted">
         Created {new Date(link.createdAt).toLocaleDateString()}
         {link.expiresAt ? ` · Expires ${new Date(link.expiresAt).toLocaleDateString()}` : ""}
+        {" · "}
+        {(link.totalClicks ?? 0).toLocaleString()} click{link.totalClicks === 1 ? "" : "s"}
       </p>
 
       {isEditing && (

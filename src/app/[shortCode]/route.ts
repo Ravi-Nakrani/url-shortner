@@ -3,6 +3,7 @@ import { connectToDatabase } from "@/lib/db/connect";
 import { findLinkByShortCode } from "@/lib/services/linkService";
 import { recordClickEvent } from "@/lib/services/outboxService";
 import { apiError } from "@/lib/api/errors";
+import { notFoundPageResponse } from "@/lib/http/notFoundPage";
 
 export async function GET(
   request: NextRequest,
@@ -15,7 +16,7 @@ export async function GET(
     const link = await findLinkByShortCode(shortCode);
 
     if (!link) {
-      return apiError(404, "NOT_FOUND", "This short link does not exist or has expired.");
+      return notFoundPageResponse();
     }
 
     const outboxStart = Date.now();
