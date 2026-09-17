@@ -3,6 +3,9 @@ import { z } from "zod";
 const envSchema = z.object({
   MONGODB_URI: z.string().url({ message: "MONGODB_URI must be a valid connection string" }),
   OUTBOX_SECRET: z.string().min(16, { message: "OUTBOX_SECRET must be at least 16 characters" }),
+  AUTH_SECRET: z.string().min(16, { message: "AUTH_SECRET must be at least 16 characters" }),
+  AUTH_GITHUB_ID: z.string().min(1, { message: "AUTH_GITHUB_ID is required" }),
+  AUTH_GITHUB_SECRET: z.string().min(1, { message: "AUTH_GITHUB_SECRET is required" }),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 });
 

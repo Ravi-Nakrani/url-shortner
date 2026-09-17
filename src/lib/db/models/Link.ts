@@ -16,6 +16,9 @@ const LinkSchema = new Schema<ILink>({
   expiresAt: { type: Date, default: null },
 });
 
+// Backs the "my links" dashboard query: a user's own links, newest first.
+LinkSchema.index({ userId: 1, createdAt: -1 });
+
 // `models.Link` may already exist on hot-reloaded / warm serverless modules;
 // re-registering the same schema throws, so reuse the existing model if present.
 export const Link: Model<ILink> = models.Link ?? model<ILink>("Link", LinkSchema);

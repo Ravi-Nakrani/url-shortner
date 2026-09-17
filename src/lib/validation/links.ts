@@ -20,3 +20,18 @@ export const createLinkSchema = z.object({
 });
 
 export type CreateLinkInput = z.infer<typeof createLinkSchema>;
+
+export const aliasSchema = z
+  .string()
+  .min(3, { message: "Alias must be at least 3 characters" })
+  .max(30, { message: "Alias must be at most 30 characters" })
+  .regex(/^[a-zA-Z0-9_-]+$/, {
+    message: "Alias can only contain letters, numbers, hyphens, and underscores",
+  });
+
+export const updateLinkSchema = z.object({
+  shortCode: aliasSchema.optional(),
+  expiresAt: z.string().datetime().nullable().optional(),
+});
+
+export type UpdateLinkInput = z.infer<typeof updateLinkSchema>;

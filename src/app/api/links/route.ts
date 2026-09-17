@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/auth";
 import { connectToDatabase } from "@/lib/db/connect";
 import { createLinkSchema } from "@/lib/validation/links";
-import { createLink, ShortCodeExhaustedError } from "@/lib/services/linkService";
+import { createLink, listLinksForUser, ShortCodeExhaustedError } from "@/lib/services/linkService";
 import { checkRateLimit } from "@/lib/services/rateLimitService";
 import { getClientIp } from "@/lib/http/getClientIp";
 import { apiError } from "@/lib/api/errors";
-import type { CreateLinkResponse } from "@/types/api";
+import type { CreateLinkResponse, ListLinksResponse } from "@/types/api";
 
 const RATE_LIMIT_MAX = 10;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -42,7 +43,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const link = await createLink(parsed.data.longUrl);
+    const session = await auth();
+    const link = await createLink(parsed.data.longUrl, session?.user?.id ?? null);
 
     const response: CreateLinkResponse = {
       shortCode: link.shortCode,
@@ -58,6 +60,30 @@ export async function POST(request: NextRequest) {
       return apiError(500, "INTERNAL_ERROR", "Could not generate a short link. Please try again.");
     }
     console.error("[links] failed to create link", error);
+    return apiError(500, "INTERNAL_ERROR", "Something went wrong. Please try again.");
+  }
+}
+
+export async function GET() {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return apiError(401, "UNAUTHORIZED", "You must be signed in to view your links.");
+  }
+
+  try {
+    await connectToDatabase();
+    const links = await listLinksForUser(session.user.id);
+    const response: ListLinksResponse = {
+      links: links.map((link) => ({
+        shortCode: link.shortCode,
+        longUrl: link.longUrl,
+        createdAt: link.createdAt.toISOString(),
+        expiresAt: link.expiresAt?.toISOString() ?? null,
+      })),
+    };
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error("[links] failed to list links", error);
     return apiError(500, "INTERNAL_ERROR", "Something went wrong. Please try again.");
   }
 }

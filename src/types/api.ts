@@ -21,3 +21,19 @@ export interface ProcessOutboxResponse {
   groupsUpdated: number;
   tookMs: number;
 }
+
+export interface LinkSummaryResponse {
+  shortCode: string;
+  longUrl: string;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+export interface ListLinksResponse {
+  links: LinkSummaryResponse[];
+}
+
+export interface UpdateLinkRequest {
+  shortCode?: string;
+  expiresAt?: string | null;
+}

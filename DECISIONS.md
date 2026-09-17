@@ -357,3 +357,99 @@ of scope for this build.
   (`expireAfterSeconds: 0`) are both confirmed present in Atlas.
 - Shortening `http://<this-app's-own-host>/anything` is rejected with a clear
   validation error rather than silently creating a link.
+
+---
+
+## Phase 5
+
+### GitHub OAuth + JWT sessions, no database adapter
+
+**Chosen**: NextAuth v5 (Auth.js) with a single GitHub OAuth provider and the `jwt`
+session strategy — no `@auth/mongodb-adapter`, no `users`/`accounts`/`sessions`
+collections.
+
+**Why**: NextAuth's official MongoDB adapter needs a raw native `MongoClient`, not
+Mongoose — adopting it would mean running two separate MongoDB client instances against
+the same Atlas cluster (Mongoose for all application data, a native driver client just
+for auth bookkeeping), which is a second moving part this project doesn't otherwise
+need. With a JWT session, the session lives entirely in a signed cookie: `link.userId`
+is simply the GitHub account's id, and the whole app keeps talking to MongoDB through
+the one Mongoose connection already established in Phase 0. The accepted tradeoff: no
+server-side session revocation (can't force-logout a user without rotating the app's
+secret) and no queryable `Users` collection. **What I'd add if this needed instant
+revocation at scale**: switch to database-backed sessions (the adapter), accepting the
+second client as the cost of that capability.
+
+### GitHub OAuth Apps only support one callback URL each — two apps, not one
+
+**Chosen**: two separate GitHub OAuth Apps, one for local dev
+(`http://localhost:3000/api/auth/callback/github`) and one for production
+(`https://<vercel-domain>/api/auth/callback/github`), each with its own Client ID/Secret
+used in `.env.local` vs. Vercel's env vars respectively.
+
+**Why**: GitHub's classic OAuth Apps accept exactly one authorization callback URL per
+app — there's no way to register both a localhost and a production callback on a single
+app, so local development and the deployed app need registrations of their own.
+
+### Anonymous link creation stays open; ownership attaches when signed in
+
+**Chosen**: `POST /api/links` never requires a session. When one exists, the created
+link's `userId` is set to the signed-in user's id; when it doesn't, `userId` stays
+`null`, exactly as before this phase.
+
+**Why**: the homepage's core "paste a URL, get a short link" flow is this project's
+primary action and shouldn't be gated behind a login wall — that would meaningfully
+change the product for anonymous visitors for the sake of a feature (link management)
+that only matters to users who want to come back and manage what they've created.
+
+### Duplicate-URL dedupe becomes owner-scoped (resolving Phase 1's deferred question)
+
+**Chosen**: `createLink`'s existing-link lookup changed from `{ longUrl }` to
+`{ longUrl, userId }`. A signed-in user resubmitting a URL they've already shortened
+gets their existing link back; a different signed-in user, or an anonymous visitor,
+shortening the identical URL gets their own independent new code.
+
+**Why**: this was explicitly flagged as an open question back in Phase 1's dedupe
+decision, deferred until real ownership existed to resolve it against. Global dedupe
+across unrelated users doesn't make sense once links are actually owned — two different
+people shortening the same article shouldn't be forced to share one link (and one
+dashboard entry) with each other; scoping the lookup by owner keeps each user's "my
+links" list reflecting only what they themselves created, while still avoiding
+duplicate entries for the same user re-shortening a URL they'd already saved.
+
+### Indistinguishable 404 for ownership failures
+
+**Chosen**: `PATCH`/`DELETE /api/links/[shortCode]` return the same `404 NOT_FOUND` both
+when the short code doesn't exist at all and when it exists but belongs to a different
+user — never a `403` that would confirm "this exists, you just can't touch it."
+
+**Why**: a `403` leaks a bit of information a non-owner has no legitimate need for —
+that a given short code is a real, claimed link. Returning `404` in both cases costs
+nothing functionally (the legitimate owner still gets a clear, correct response) and is
+a small, free defense-in-depth habit: never confirm the existence of something the
+caller isn't authorized to see, only what they're allowed to see.
+
+### Deletes don't cascade to analytics
+
+**Chosen**: deleting a link removes only the `Link` document. Any `outbox_events`,
+`click_stats`, or `referrer_stats` rows already recorded for that `shortCode` are left
+untouched.
+
+**Why**: historical click data is a record of what already happened and arguably should
+persist even after the link itself is removed — most analytics tools don't erase
+history when the thing being measured is archived. Cascading the delete would also mean
+deciding what happens to _unprocessed_ outbox events for a shortCode whose link just
+disappeared (drain them anyway? discard them?) for a low-value edge case at this
+project's scale — not worth the added complexity here.
+
+### Verified
+
+- Signing in via GitHub, `/dashboard`'s middleware redirect for unauthenticated
+  visitors, `401` on `GET`/`PATCH`/`DELETE /api/links*` without a session, and
+  anonymous link creation continuing to work unchanged were all verified directly
+  (the OAuth flow itself requires the real GitHub OAuth Apps described above, set up
+  outside this environment).
+- Next.js 16 deprecated the `middleware.ts` file convention in favor of `proxy.ts`
+  mid-build (a "middleware" deprecation warning surfaced during `next build`) — the
+  file was renamed with no logic changes; confirmed the deprecation warning is gone and
+  the route protection still works identically afterward.

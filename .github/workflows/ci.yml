@@ -29,4 +29,7 @@ jobs:
           # contacted by the unit tests (models/services are mocked).
           MONGODB_URI: mongodb://localhost:27017/ci-placeholder
           OUTBOX_SECRET: ci-placeholder-secret-value
+          AUTH_SECRET: ci-placeholder-auth-secret-value
+          AUTH_GITHUB_ID: ci-placeholder-id
+          AUTH_GITHUB_SECRET: ci-placeholder-secret
         run: npm test
