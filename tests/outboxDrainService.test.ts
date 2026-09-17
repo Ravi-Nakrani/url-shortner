@@ -42,6 +42,17 @@ vi.mock("@/lib/db/models/DrainMeta", () => ({
   LAST_DRAIN_DOC_ID: "last_drain",
 }));
 
+const drainLockFindOneAndUpdateMock = vi.fn();
+const drainLockUpdateOneMock = vi.fn();
+
+vi.mock("@/lib/db/models/DrainLock", () => ({
+  DrainLock: {
+    findOneAndUpdate: (...args: unknown[]) => drainLockFindOneAndUpdateMock(...args),
+    updateOne: (...args: unknown[]) => drainLockUpdateOneMock(...args),
+  },
+  DRAIN_LOCK_ID: "drain_lock",
+}));
+
 const { drainOutbox } = await import("@/lib/services/outboxDrainService");
 
 function makeChainableFind(events: unknown[]) {
@@ -74,6 +85,8 @@ describe("drainOutbox", () => {
     withTransactionMock.mockReset();
     endSessionMock.mockReset().mockResolvedValue(undefined);
     drainMetaFindOneAndUpdateMock.mockReset().mockResolvedValue({});
+    drainLockFindOneAndUpdateMock.mockReset().mockResolvedValue({});
+    drainLockUpdateOneMock.mockReset().mockResolvedValue({});
 
     withTransactionMock.mockImplementation(async (fn: () => Promise<void>) => {
       await fn();
@@ -232,5 +245,49 @@ describe("drainOutbox", () => {
 
     await expect(drainOutbox(200)).rejects.toThrow("transaction failed");
     expect(endSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fetch or aggregate events when another invocation already holds the lock", async () => {
+    drainLockFindOneAndUpdateMock.mockRejectedValue(
+      Object.assign(new Error("duplicate key"), { code: 11000 }),
+    );
+
+    const result = await drainOutbox(200);
+
+    expect(result).toEqual({ processedCount: 0, groupsUpdated: 0, tookMs: expect.any(Number) });
+    expect(findMock).not.toHaveBeenCalled();
+    // Never acquired, so there's nothing of ours to release.
+    expect(drainLockUpdateOneMock).not.toHaveBeenCalled();
+  });
+
+  it("releases the lock after a successful drain", async () => {
+    findMock.mockReturnValue(makeChainableFind([makeEvent()]));
+
+    await drainOutbox(200);
+
+    expect(drainLockFindOneAndUpdateMock).toHaveBeenCalledTimes(1);
+    expect(drainLockUpdateOneMock).toHaveBeenCalledWith(
+      { _id: "drain_lock" },
+      { $set: { lockedUntil: expect.any(Date) } },
+    );
+  });
+
+  it("releases the lock even when the transaction throws, so a retry can succeed", async () => {
+    findMock.mockReturnValue(makeChainableFind([makeEvent()]));
+    withTransactionMock.mockRejectedValueOnce(new Error("transaction failed"));
+
+    await expect(drainOutbox(200)).rejects.toThrow("transaction failed");
+    expect(drainLockUpdateOneMock).toHaveBeenCalledTimes(1);
+
+    // The failed attempt made zero writes (the transaction never committed),
+    // so the same batch is still unprocessed and safe to reprocess exactly
+    // once on this retry — no double-counting.
+    withTransactionMock.mockImplementationOnce(async (fn: () => Promise<void>) => {
+      await fn();
+    });
+    const result = await drainOutbox(200);
+
+    expect(result.processedCount).toBe(1);
+    expect(clickStatsBulkWriteMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -291,6 +291,54 @@ without waiting on the schedule.
   remaining 50 — confirming the batch cap actually bounds work per invocation rather
   than draining to completion.
 
+### Concurrent-drain lock (added in a later reliability audit)
+
+**The gap**: the transaction above makes a single `drainOutbox()` invocation safe against
+a mid-run crash — the rollups and the `processed: true` update either both commit or
+neither does. It does **not** protect against two invocations running at the same time.
+Before this fix, if a scheduled run and a manual `workflow_dispatch` overlapped (or a
+caller retried a slow request), both could call `OutboxEvent.find({processed: false})`
+before either had marked anything processed, both would fetch the identical batch, and
+both would commit their own transaction — silently double-counting every click in that
+batch. Concurrent invocations are a real possibility here, not a hypothetical one: the
+drain endpoint is a plain HTTP route with no built-in mutual exclusion, and the workflow
+explicitly enables on-demand triggering alongside the schedule.
+
+**Chosen**: a short-lived mutex, `drain_lock` (one singleton document, `DrainLock`
+model), acquired with an atomic upsert before any event is fetched and released in a
+`finally` block once the drain completes. The acquire filter only matches an expired or
+nonexistent lock; if a live lock already exists, the upsert collides with that
+document's `_id` and throws a duplicate-key error instead of overwriting it — the exact
+same trick this codebase already uses for short-code and alias collisions, just applied
+to "at most one lock document may exist in an acquirable state" instead of "at most one
+link document may exist per short code." A losing invocation returns immediately with a
+zero-work result rather than blocking or retrying.
+
+**Why a lock and not per-event claiming**: an alternative would be to atomically stamp
+each fetched event with a `claimedBy`/`claimedAt` field before aggregating, so two
+invocations could genuinely work on disjoint batches concurrently. That's real added
+complexity (a claim step, unclaim-on-failure, orphaned-claim cleanup) to buy concurrent
+throughput this project doesn't need — outbox volume here is nowhere near the point
+where one invocation every 5 minutes is a bottleneck. A single mutex is the smallest
+change that closes the double-counting risk entirely, which is what this audit asked
+for: not a rewrite, a fix.
+
+**Why a TTL instead of an unconditional release**: the lock is released explicitly on
+both the success and failure path, but the acquire filter _also_ treats a lock older than
+2 minutes as expired regardless. If a serverless function were killed outright (not just
+throwing an error the `finally` block can still run for), an unreleased lock would
+otherwise wedge every future drain forever. 2 minutes is comfortably shorter than the
+5-minute schedule interval, so a stuck lock always heals itself before the next
+scheduled tick — no on-call intervention, no manual collection edit.
+
+**Verified against the real database**: seeded 10 outbox events for a dedicated test
+short code, then fired two genuinely concurrent `POST /api/process-outbox` requests
+(backgrounded shell curls hitting a running dev server, not sequential calls). One
+request processed the full backlog (`processedCount: 12`, including a couple of
+leftover real events from earlier manual testing); the other returned immediately with
+`processedCount: 0` — the lock had already been taken. `click_stats` for the test short
+code ended up with exactly 10 clicks, not 20, confirming no double-counting occurred.
+
 ---
 
 ## Phase 4
