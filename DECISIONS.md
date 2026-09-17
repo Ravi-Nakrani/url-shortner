@@ -391,6 +391,16 @@ used in `.env.local` vs. Vercel's env vars respectively.
 app — there's no way to register both a localhost and a production callback on a single
 app, so local development and the deployed app need registrations of their own.
 
+**What actually happened**: only one OAuth App was created in practice, registered with
+the production callback URL. This was a deliberate call at setup time to skip the extra
+registration step, accepting that GitHub sign-in can't be exercised against `localhost`
+as a result — `AUTH_GITHUB_ID`/`AUTH_GITHUB_SECRET` are the same value in both
+`.env.local` and Vercel, so everything _except_ the OAuth handshake itself works
+locally (anonymous link creation, the rate limiter, the outbox, etc.); the actual
+sign-in flow was verified end-to-end against the deployed Vercel app instead. Setting
+up the second, localhost-callback app remains a five-minute addition if local OAuth
+testing is ever needed.
+
 ### Anonymous link creation stays open; ownership attaches when signed in
 
 **Chosen**: `POST /api/links` never requires a session. When one exists, the created
@@ -453,3 +463,15 @@ project's scale — not worth the added complexity here.
   mid-build (a "middleware" deprecation warning surfaced during `next build`) — the
   file was renamed with no logic changes; confirmed the deprecation warning is gone and
   the route protection still works identically afterward.
+- The first production deploy of this phase failed at build time
+  (`Invalid environment configuration ... AUTH_SECRET: Invalid input: expected string,
+received undefined`) because `AUTH_SECRET` hadn't been added to Vercel's env vars yet
+  (only `AUTH_GITHUB_ID`/`AUTH_GITHUB_SECRET` had been) — exactly the fail-fast behavior
+  `env.ts` was built for back in Phase 0, catching a misconfiguration at build time
+  rather than at request time in production. Fixed by adding the missing var and
+  redeploying.
+- The full GitHub sign-in flow (redirect to GitHub, authorize, redirect back
+  authenticated) and the complete "My Links" dashboard CRUD (create while signed in,
+  edit alias with a working conflict error on a taken alias, set/clear expiry with the
+  redirect route respecting it, delete) were verified end-to-end against the deployed
+  Vercel app.
