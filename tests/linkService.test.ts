@@ -20,6 +20,7 @@ vi.mock("@/lib/shortcode", () => ({
 
 const {
   createLink,
+  findLinkByShortCode,
   updateLink,
   deleteLink,
   listLinksForUser,
@@ -110,6 +111,55 @@ describe("createLink", () => {
 
     await expect(createLink("https://example.com", null)).rejects.toThrow("connection lost");
     expect(createMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("findLinkByShortCode", () => {
+  beforeEach(() => {
+    findOneMock.mockReset();
+  });
+
+  it("returns null when no link matches the short code", async () => {
+    findOneMock.mockResolvedValue(null);
+
+    const result = await findLinkByShortCode("doesNotExist");
+
+    expect(result).toBeNull();
+  });
+
+  it("returns the link when it has no expiry", async () => {
+    const link = { shortCode: "abc1234", longUrl: "https://example.com", expiresAt: null };
+    findOneMock.mockResolvedValue(link);
+
+    const result = await findLinkByShortCode("abc1234");
+
+    expect(result).toBe(link);
+  });
+
+  it("returns the link when its expiry is in the future", async () => {
+    const link = {
+      shortCode: "abc1234",
+      longUrl: "https://example.com",
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    findOneMock.mockResolvedValue(link);
+
+    const result = await findLinkByShortCode("abc1234");
+
+    expect(result).toBe(link);
+  });
+
+  it("treats a link with a past expiry as not found", async () => {
+    const link = {
+      shortCode: "abc1234",
+      longUrl: "https://example.com",
+      expiresAt: new Date(Date.now() - 60_000),
+    };
+    findOneMock.mockResolvedValue(link);
+
+    const result = await findLinkByShortCode("abc1234");
+
+    expect(result).toBeNull();
   });
 });
 

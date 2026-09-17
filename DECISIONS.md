@@ -78,10 +78,13 @@ Cron Jobs.
 **Why**: Vercel's Hobby (free) tier limits Cron Jobs to once per day, which would leave
 analytics stale for hours. GitHub Actions' scheduled workflows are free and support
 minute-level granularity, so it's used as the external trigger instead — this avoids
-introducing a dedicated queue/worker service (SQS, a managed Kafka, a standalone cron
-server) while remaining appropriate for a portfolio project on free-tier
-infrastructure. The honest tradeoff: it's polling, not push-based, so latency is bounded
-by the schedule interval, not by how quickly work becomes available.
+introducing a dedicated queue/worker service (SQS, RabbitMQ, a managed Kafka, a
+standalone cron server) while remaining appropriate for a portfolio project on
+free-tier infrastructure. This is a deliberate portfolio/free-tier tradeoff, not a claim
+that GitHub Actions is the ideal event-processing solution at every scale: it's polling,
+not push-based, so latency is bounded by the schedule interval, not by how quickly work
+becomes available. A real message broker would be the right call once volume or latency
+requirements outgrow "good enough within 5 minutes."
 
 ### Bounded-batch draining instead of drain-to-completion — _(will be exercised in Phase 3, decision made now)_
 

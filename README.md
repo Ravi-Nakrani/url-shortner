@@ -37,8 +37,9 @@ to answer honestly, including the places I initially got something wrong and fix
 ## Features
 
 - **Link shortening** with collision-safe short codes and per-owner duplicate detection
-- **Durable click tracking** — a redirect and its click event are never allowed to
-  disagree with each other
+- **Durable click tracking** — click events are persisted to a durable outbox before
+  the redirect, whenever the write succeeds (see [Reliability](#reliability) for the
+  precise, honest version of this claim)
 - **Asynchronous analytics** — clicks over time, top referrers, and a per-link
   breakdown, computed by a background worker decoupled from the redirect path
 - **Authentication & ownership** — sign in with GitHub to keep your links private and
@@ -53,7 +54,7 @@ Every one of these is real, running code — not aspirational. See
 ## Architecture
 
 ```mermaid
-flowchart TD
+flowchart LR
     Browser[Browser]
     NextJS[Next.js App Router on Vercel]
     Links[(links: URLs + ownership)]
@@ -62,25 +63,29 @@ flowchart TD
     Rollups[(click_stats / referrer_stats)]
     Dashboard[Analytics dashboard]
 
-    Browser -- "1. GET a short link" --> NextJS
+    Browser -- "1. POST a URL to shorten" --> NextJS
+    NextJS -- "1. create link" --> Links
+
+    Browser -- "2. GET a short link" --> NextJS
     NextJS -- "2. look up destination" --> Links
-    NextJS -- "3. write click event" --> Outbox
-    NextJS -- "4. 302 redirect" --> Browser
+    NextJS -- "2. write click event" --> Outbox
+    NextJS -- "2. 302 redirect" --> Browser
 
-    GHA -- "5. POST /api/process-outbox, every 5 min" --> NextJS
-    NextJS -- "6. fetch a bounded batch" --> Outbox
-    NextJS -- "7. aggregate + mark processed, one transaction" --> Rollups
+    GHA -- "3. POST /api/process-outbox, every 5 min" --> NextJS
+    NextJS -- "3. fetch a bounded batch" --> Outbox
+    NextJS -- "3. aggregate + mark processed, one transaction" --> Rollups
 
-    Dashboard -- "8. read-only, pre-aggregated" --> Rollups
+    Dashboard -- "3. read-only, pre-aggregated" --> Rollups
 ```
 
-**Steps 1–4 are the synchronous, user-facing redirect path** — a browser is waiting on
-this, so it does the minimum necessary work: look up the destination, write one small
-durable event, redirect. **Steps 5–8 are entirely asynchronous** and run on a completely
-different schedule (a GitHub Actions cron job, not triggered by user traffic at all) —
-a slow or failed analytics run can never make a redirect slower or fail. The dashboard
-(step 8) only ever reads the pre-aggregated rollup collections, never the raw event log,
-so its query cost doesn't grow with how large the outbox backlog gets.
+**Paths 1 and 2 are synchronous** — a browser is waiting on either request, so each does
+the minimum necessary work: path 1 validates and inserts a link; path 2 looks up the
+destination, writes one small durable event, and redirects. **Path 3 is entirely
+asynchronous** and runs on a completely different schedule (a GitHub Actions cron job,
+not triggered by user traffic at all) — a slow or failed analytics run can never make a
+redirect or a link creation slower or fail. The dashboard only ever reads the
+pre-aggregated rollup collections, never the raw event log, so its query cost doesn't
+grow with how large the outbox backlog gets.
 
 Everything above lives in one MongoDB Atlas cluster, across five collections doing five
 distinct jobs — no separate datastore per concern:
@@ -128,10 +133,14 @@ dropping the click. Writing one small, durable event synchronously (but cheaply)
 of the redirect request guarantees it's recorded before the function returns, while
 keeping the actual aggregation work entirely out of the redirect's critical path.
 
-**Asynchronous analytics via a GitHub Actions cron job, not Vercel Cron** — Vercel's free
-tier limits Cron Jobs to once a day, which would leave analytics stale for hours.
-GitHub Actions' scheduled workflows are free and support 5-minute granularity, so it's
-used as the external trigger instead, calling a secret-protected endpoint.
+**Asynchronous analytics via a GitHub Actions cron job, not Kafka/RabbitMQ/a managed
+queue** — Vercel's free tier limits its own Cron Jobs to once a day, which would leave
+analytics stale for hours, so an external trigger is needed regardless. GitHub Actions'
+scheduled workflows are free and support 5-minute granularity, calling a
+secret-protected endpoint. This is a deliberate portfolio/free-tier tradeoff, not a claim
+that polling a cron-triggered HTTP endpoint is the ideal design at every scale — a real
+message broker would be the right call once volume or latency requirements outgrow
+"good enough within 5 minutes."
 
 **MongoDB-based rate limiting, not Redis** — a single atomic
 `findOneAndUpdate({key}, {$inc:{count:1}}, {upsert:true})`, keyed by identifier and the
@@ -144,18 +153,20 @@ Every decision above — plus several more, and the alternatives considered and 
 for each — is logged in detail in [DECISIONS.md](DECISIONS.md), including the exact
 verification performed against the real database for each one.
 
-## Security & Reliability
+## Reliability
 
-- **Ownership is enforced everywhere, not just checked at the edge**: every read/write
-  against a link is scoped by `{shortCode, userId}` at the query level, not filtered
-  after the fact. Trying to edit or delete a link you don't own returns a plain `404`,
-  not a `403` — the API never confirms that a short code you don't own even exists.
-- **Input validation**: URLs are parsed with `zod`, restricted to `http`/`https`, and
-  capped at 2048 characters before a link is ever created — `javascript:` and `data:`
-  payloads are rejected outright.
+- **The precise click-tracking guarantee, stated honestly**: a redirect writes its click
+  event to the durable outbox _before_ responding, and if that write succeeds, the event
+  is safe — it will be aggregated by the next drain regardless of what happens
+  afterward. If the write itself fails (a transient database error, a timeout), the
+  redirect still succeeds and that one click goes unrecorded. This is a deliberate
+  tradeoff — a user is waiting on the redirect, so failing it over a lost analytics event
+  would be worse than the gap itself — not a claim that every click is guaranteed to be
+  recorded under all conditions.
 - **A crash mid-analytics-drain can't double-count clicks**: the rollup writes and the
   "mark these events processed" update run inside one MongoDB transaction, so a crash
-  at any point either commits the whole batch or none of it.
+  at any point either commits the whole batch or none of it. Verified with a test that
+  forces the transaction to throw mid-batch and confirms nothing was written.
 - **Two overlapping drain runs can't double-count clicks either** — a real gap found
   during a later reliability audit (a scheduled run colliding with a manual trigger, or
   a retried request, could both aggregate the same batch). Closed with a short-lived
@@ -169,6 +180,29 @@ verification performed against the real database for each one.
 - **Eventual consistency is surfaced, not hidden**: the analytics dashboard states
   outright that click data is processed asynchronously and may lag behind real clicks by
   a few minutes, alongside a live "data current as of" timestamp from the last drain.
+
+## Security
+
+- **Ownership is enforced everywhere, not just checked at the edge**: every read/write
+  against a link is scoped by `{shortCode, userId}` at the query level, not filtered
+  after the fact. Trying to edit or delete a link you don't own returns a plain `404`,
+  not a `403` — the API never confirms that a short code you don't own even exists.
+- **Input validation**: URLs are parsed with `zod`, restricted to `http`/`https`, and
+  capped at 2048 characters before a link is ever created — `javascript:` and `data:`
+  payloads are rejected outright.
+- **The outbox drain endpoint requires a shared secret** (`x-outbox-secret`, checked
+  against `OUTBOX_SECRET`) — without it, `POST /api/process-outbox` returns `401` and
+  performs no writes, so it can't be triggered or abused by an outside caller.
+- **This app is an open redirect by design, not by accident** — a URL shortener's entire
+  job is to send visitors somewhere else, so "redirects anywhere" isn't a vulnerability
+  here the way it would be on, say, an auth callback endpoint. What _is_ validated is the
+  input at creation time (must be a well-formed `http`/`https` URL, can't point back at
+  this app itself).
+- **Not currently implemented** (worth naming rather than pretending they don't matter):
+  no phishing/malware destination scanning on the URLs people shorten, no abuse-reporting
+  flow, and rate limiting is a single-node-friendly MongoDB counter rather than a
+  distributed limiter — all reasonable next additions for a version of this meant to be
+  opened up to the public rather than run as a personal/portfolio tool.
 
 ## Testing
 
@@ -221,6 +255,15 @@ Being honest about what this _isn't_:
   is titled "URL Shortener" everywhere else — a naming slip caught late. Left as-is
   rather than renamed, since renaming a GitHub repo with a live Vercel deployment
   attached to it risks breaking that deployment's git integration.
+- **MongoDB Atlas Network Access is set to `0.0.0.0/0`** (allow-from-anywhere) — Vercel's
+  serverless functions run on a pool of IPs that change and aren't published, so a
+  traditional IP allowlist doesn't work against them out of the box. Access is still
+  gated by the connection string's credentials, so this isn't an open database, but
+  it's a wider network surface than an IP-restricted one. The production-appropriate
+  alternative is Vercel's [Secure Compute](https://vercel.com/docs/secure-compute) (static
+  outbound IPs an allowlist can actually reference) or Atlas's own PrivateLink — both add
+  cost/complexity not justified for a portfolio-scale project, which is why this uses the
+  simpler option and names the tradeoff here instead of hiding it.
 
 ## Local Development
 
