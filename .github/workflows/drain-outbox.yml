@@ -11,6 +11,6 @@ jobs:
     steps:
       - name: Call process-outbox endpoint
         run: |
-          curl -sf -X POST "${{ secrets.APP_URL }}/api/process-outbox" \
+          curl -sfL -X POST "${{ secrets.APP_URL }}/api/process-outbox" \
             -H "x-outbox-secret: ${{ secrets.OUTBOX_SECRET }}" \
             -w "\nHTTP %{http_code}\n"
