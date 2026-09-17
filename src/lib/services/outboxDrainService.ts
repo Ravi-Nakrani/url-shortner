@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { OutboxEvent } from "@/lib/db/models/OutboxEvent";
 import { ClickStats } from "@/lib/db/models/ClickStats";
 import { ReferrerStats } from "@/lib/db/models/ReferrerStats";
+import { DrainMeta, LAST_DRAIN_DOC_ID } from "@/lib/db/models/DrainMeta";
 
 const DEFAULT_BATCH_SIZE = 200;
 
@@ -37,6 +38,21 @@ function toReferrerHost(referrer: string | null): string {
   }
 }
 
+async function recordDrainTimestamp(processedCount: number): Promise<void> {
+  try {
+    await DrainMeta.findOneAndUpdate(
+      { _id: LAST_DRAIN_DOC_ID },
+      { $set: { lastDrainedAt: new Date(), processedCount } },
+      { upsert: true },
+    );
+  } catch (error) {
+    // The freshness timestamp is a display convenience for the analytics
+    // dashboard, not a correctness-critical value — a failure here shouldn't
+    // fail an otherwise-successful drain.
+    console.error("[outbox] failed to record drain timestamp", error);
+  }
+}
+
 export async function drainOutbox(batchSize: number = DEFAULT_BATCH_SIZE): Promise<DrainResult> {
   const start = Date.now();
 
@@ -45,6 +61,7 @@ export async function drainOutbox(batchSize: number = DEFAULT_BATCH_SIZE): Promi
     .limit(batchSize);
 
   if (events.length === 0) {
+    await recordDrainTimestamp(0);
     return { processedCount: 0, groupsUpdated: 0, tookMs: Date.now() - start };
   }
 
@@ -112,6 +129,8 @@ export async function drainOutbox(batchSize: number = DEFAULT_BATCH_SIZE): Promi
   } finally {
     await session.endSession();
   }
+
+  await recordDrainTimestamp(events.length);
 
   return {
     processedCount: events.length,

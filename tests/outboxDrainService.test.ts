@@ -33,6 +33,15 @@ vi.mock("@/lib/db/models/ReferrerStats", () => ({
   },
 }));
 
+const drainMetaFindOneAndUpdateMock = vi.fn();
+
+vi.mock("@/lib/db/models/DrainMeta", () => ({
+  DrainMeta: {
+    findOneAndUpdate: (...args: unknown[]) => drainMetaFindOneAndUpdateMock(...args),
+  },
+  LAST_DRAIN_DOC_ID: "last_drain",
+}));
+
 const { drainOutbox } = await import("@/lib/services/outboxDrainService");
 
 function makeChainableFind(events: unknown[]) {
@@ -64,6 +73,7 @@ describe("drainOutbox", () => {
     startSessionMock.mockReset();
     withTransactionMock.mockReset();
     endSessionMock.mockReset().mockResolvedValue(undefined);
+    drainMetaFindOneAndUpdateMock.mockReset().mockResolvedValue({});
 
     withTransactionMock.mockImplementation(async (fn: () => Promise<void>) => {
       await fn();
@@ -84,6 +94,30 @@ describe("drainOutbox", () => {
     expect(clickStatsBulkWriteMock).not.toHaveBeenCalled();
     expect(referrerStatsBulkWriteMock).not.toHaveBeenCalled();
     expect(updateManyMock).not.toHaveBeenCalled();
+  });
+
+  it("still records a drain timestamp on an empty-backlog no-op", async () => {
+    findMock.mockReturnValue(makeChainableFind([]));
+
+    await drainOutbox(200);
+
+    expect(drainMetaFindOneAndUpdateMock).toHaveBeenCalledWith(
+      { _id: "last_drain" },
+      { $set: { lastDrainedAt: expect.any(Date), processedCount: 0 } },
+      { upsert: true },
+    );
+  });
+
+  it("records a drain timestamp with the processed count after a real batch", async () => {
+    findMock.mockReturnValue(makeChainableFind([makeEvent(), makeEvent()]));
+
+    await drainOutbox(200);
+
+    expect(drainMetaFindOneAndUpdateMock).toHaveBeenCalledWith(
+      { _id: "last_drain" },
+      { $set: { lastDrainedAt: expect.any(Date), processedCount: 2 } },
+      { upsert: true },
+    );
   });
 
   it("respects the batch size passed to find().limit()", async () => {

@@ -475,3 +475,78 @@ received undefined`) because `AUTH_SECRET` hadn't been added to Vercel's env var
   edit alias with a working conflict error on a taken alias, set/clear expiry with the
   redirect route respecting it, delete) were verified end-to-end against the deployed
   Vercel app.
+
+---
+
+## Phase 6
+
+### Single accent hue for both charts, not a categorical palette
+
+**Chosen**: both the clicks-over-time chart and the top-referrers chart use the app's
+one existing `--accent` token for every mark — no multi-hue categorical palette was
+introduced.
+
+**Why**: consulted the `dataviz` skill before writing any chart code, per its own
+trigger criteria. Its form-selection rule is explicit: a bar/line chart whose bars or
+line represent a single measure (total clicks) across nominal categories that have no
+natural order (dates, referrer domains) takes **one series → one color**; a categorical
+rainbow is reserved for genuinely _distinct series_ plotted together (e.g. multiple
+lines, one per link, on the same chart — which this dashboard doesn't do). Coloring
+each referrer bar a different hue would have been the exact "value-ramp / rainbow on
+nominal categories" anti-pattern the skill calls out: it burns the identity channel on
+information the bar's length and axis label already show, and would have undercut the
+app's own restrained, single-accent visual identity for no actual gain in readability.
+Both charts also skip a legend, per the same reasoning: a single series needs no legend
+box, since the chart's own title already says what's plotted.
+
+### Two rollup collections again pay off: aggregate `$group` queries need no new indexes
+
+**Chosen**: `getAnalyticsForUser`'s three aggregation queries (`$match` + `$group` on
+`click_stats` twice, once on `referrer_stats`) run entirely against the compound
+indexes Phase 3 already created (`{shortCode, date}` unique on `click_stats`,
+`{shortCode, date, referrer}` unique on `referrer_stats`) — no new indexes were added
+in this phase.
+
+**Why**: this is the same reasoning already logged in Phase 3's decision to use
+`referrer` as a plain field rather than a nested map — a plain field is both
+increment-safe _and_ query-friendly. Confirmed directly rather than assumed: `.explain()`
+against real Atlas data shows every one of the three aggregations resolving to
+`GROUP → FETCH → IXSCAN` on the relevant compound index, never a `COLLSCAN`.
+
+### `DrainMeta` updates on every drain invocation, including empty no-ops
+
+**Chosen**: `outboxDrainService.drainOutbox()` now writes `{ lastDrainedAt: now,
+processedCount }` to a `DrainMeta` singleton document after **every** call — including
+when the backlog was empty and nothing was aggregated.
+
+**Why**: the master spec asks the dashboard to honestly surface "data current as of
+[last drain time]." If the timestamp only updated on non-empty runs, a fully
+caught-up system — which is the normal steady state once the backlog is drained —
+would show an increasingly stale-looking timestamp purely because there was nothing
+new to find, misrepresenting a healthy, current system as a lagging one. Updating on
+every invocation instead answers the honest question a freshness indicator should
+answer: "when did the system last check," not "when did it last find something."
+
+### Analytics scoped to owned links only; anonymous clicks aren't visualized anywhere
+
+**Chosen**: `getAnalyticsForUser` only ever aggregates `click_stats`/`referrer_stats`
+rows whose `shortCode` belongs to one of the caller's own `Link` documents. Clicks on
+anonymous (`userId: null`) links are recorded in the outbox and rolled up into the
+stats collections exactly as before, but there is no view anywhere in the app that
+surfaces them.
+
+**Why**: a direct, unavoidable consequence of Phase 5's ownership model — an
+anonymous link has no owner to show a dashboard to. This wasn't a fresh decision so
+much as this phase's read path simply respecting a boundary Phase 5 already drew.
+
+### Verified
+
+- The daily-clicks, per-link-totals, and top-referrers aggregation queries were run
+  directly against real seeded Atlas data (bypassing the unreachable-locally OAuth
+  flow) and produced correct results; `.explain()` on all three confirmed
+  `IXSCAN`/`FETCH`/`GROUP` plans using the expected compound index, with no collection
+  scans.
+- Because these queries only ever touch `click_stats`/`referrer_stats` — never
+  `outbox_events` — the analytics read path's latency is structurally independent of
+  outbox backlog size by construction, not just by observation (there is no code path
+  from this phase that could touch the outbox collection at all).

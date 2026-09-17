@@ -27,6 +27,9 @@ export async function AuthStatus() {
       <Link href="/dashboard" className="text-text-muted underline hover:text-accent">
         My Links
       </Link>
+      <Link href="/dashboard/analytics" className="text-text-muted underline hover:text-accent">
+        Analytics
+      </Link>
       <span className="text-text-muted">{session.user.name}</span>
       <form
         action={async () => {
