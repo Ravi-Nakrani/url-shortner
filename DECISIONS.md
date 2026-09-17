@@ -102,3 +102,55 @@ resolves, silently dropping click events. Writing the outbox entry synchronously
 cheaply — a single small insert) guarantees the event is durably recorded before the
 function returns, while keeping the heavier aggregation work (Phase 3) out of the
 redirect's critical path entirely.
+
+---
+
+## Phase 1
+
+### Redirect status code: 301 (permanent)
+
+**Chosen**: `GET /[shortCode]` issues a `301 Moved Permanently` redirect, not `302`.
+
+**Why**: a given short code maps to exactly one destination for its entire lifetime in
+this design (links aren't edited in place), so 301 is the semantically correct status
+and is more cacheable by browsers/CDNs. The tradeoff, worth being able to explain: if a
+future feature ever let a link's destination be changed after creation, a 301 previously
+cached by a visitor's browser could keep sending them to the old destination even after
+the database is updated — 302 would avoid that at the cost of every hit re-checking with
+the server. Since links are immutable here, 301 is the right choice for this design.
+
+### Duplicate `longUrl` submissions return the existing short code
+
+**Chosen**: `linkService.createLink` first checks for an existing link with the same
+`longUrl` (via a plain, non-unique index) and returns it unchanged rather than minting a
+new code every time the same URL is submitted.
+
+**Why**: avoids link sprawl (many different short codes pointing at the identical
+destination) and matches a common user expectation ("I already shortened this"). Because
+this phase has no per-user ownership yet, the dedupe is global/anonymous — two different
+visitors shortening the same URL get the same code. This is worth revisiting once
+Phase 5 introduces authenticated ownership, where per-user dedupe might be more
+appropriate than global dedupe; that's an open question deliberately deferred rather
+than silently decided now. The lookup-then-insert isn't wrapped in a transaction, so a
+very tight race between two brand-new identical submissions could in principle produce
+two codes for the same URL — an accepted, low-frequency edge case rather than added
+transactional complexity.
+
+### URL scheme restricted to http/https
+
+**Chosen**: `createLinkSchema` rejects any URL whose protocol isn't `http:` or `https:`
+(e.g. `javascript:`, `data:`), in addition to zod's baseline `.url()` syntax check.
+
+**Why**: `GET /[shortCode]` issues a server-side redirect, so this app itself isn't
+directly exploitable via script-injection through the destination URL — but without this
+check, the shortener would happily mint a short link that hands anyone who clicks it a
+`javascript:` or `data:` URL, i.e. it would function as an open redirector to dangerous
+schemes. This narrow check is handled here rather than deferred entirely to Phase 4's
+broader abuse-prevention work, since it's a two-line addition to an already-required
+validation schema, not a new subsystem.
+
+### Redirect latency baseline (local, warm connection)
+
+Measured against a local dev server with an already-established Atlas connection:
+~20-50ms per redirect. This is the number Phase 2's outbox-insert overhead and Phase 7's
+Edge Function migration will be compared against.
