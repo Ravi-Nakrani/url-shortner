@@ -285,3 +285,75 @@ without waiting on the schedule.
   exactly 200 (the batch cap) and left 50 unprocessed; a second call drained the
   remaining 50 — confirming the batch cap actually bounds work per invocation rather
   than draining to completion.
+
+---
+
+## Phase 4
+
+### Fixed-window rate limiting via one atomic MongoDB upsert
+
+**Chosen**: `POST /api/links` is limited to 10 requests per 60-second window per client
+IP, implemented as a single atomic `RateLimit.findOneAndUpdate({key}, {$inc:{count:1},
+$setOnInsert:{expiresAt}}, {upsert:true, new:true})`, where `key` embeds the identifier
+and the current window's start timestamp (`floor(now / windowMs) * windowMs`).
+
+**Why atomic upsert-increment over read-then-write**: a "read the current count, check
+it, write count+1" pattern has a race window — two concurrent requests can both read
+the same count before either writes, both see themselves as "under the limit," and both
+get admitted, silently exceeding it. `$inc` inside `findOneAndUpdate` is atomic at the
+database level, so concurrent requests in the same window are serialized correctly by
+MongoDB itself with no read-then-write gap to race in.
+
+**Why fixed window over sliding window (the tradeoff, stated explicitly)**: a fixed
+window is simple to reason about and implement as one atomic operation, but has a known
+weakness — a client can send up to `limit` requests at the very end of one window and
+another `limit` at the very start of the next, admitting up to `2×limit` requests in a
+short burst that straddles the boundary. A sliding-window counter (weighting the
+previous window's count by how much of it overlaps "now") avoids this at the cost of
+more bookkeeping (tracking two windows' counts instead of one) and more complex
+reasoning about correctness. For a portfolio-scale project the accepted burst is bounded
+and self-limiting (at most one extra window's worth of requests, ever), so the fixed
+window's simplicity wins here — but the boundary case is worth being able to describe
+precisely if asked, rather than presented as if it doesn't exist.
+
+**TTL index instead of manual cleanup**: `rate_limits` has a TTL index on `expiresAt`
+(`expireAfterSeconds: 0`, i.e. expire exactly at the stored time). MongoDB's own
+background process removes each window's counter document once its window ends, so
+the collection never accumulates unbounded history and no cron/cleanup job is needed —
+consistent with the "let the database do the bookkeeping" pattern already used for
+short-code collision-freedom (Phase 0) and the outbox drain index (Phase 2).
+
+**What a Redis-backed limiter would buy over this at scale**: Redis's `INCR`+`EXPIRE`
+(or a sorted-set-based sliding window) is faster per-request than a MongoDB round-trip,
+and a token-bucket algorithm (smoothing request admission over time rather than hard
+window edges) is straightforward to implement with Redis's atomic operations. At this
+project's scale, one extra MongoDB write per link-creation request is negligible
+overhead, so Redis isn't a meaningful win here — it becomes one once request volume is
+high enough that shaving milliseconds off every write actually matters, which is a
+"when you'd reach for it" answer rather than a "you need it now" one.
+
+### Reject self-referential short links
+
+**Chosen**: `POST /api/links` rejects a `longUrl` whose host matches the app's own
+request host (i.e. someone trying to shorten a link that points back at this same
+shortener), returning a `VALIDATION_ERROR` before ever calling `createLink`.
+
+**Why**: without this check, nothing stops a short link from pointing at another short
+link on the same domain, including — in the degenerate case — at itself, creating a
+redirect loop. This is a narrow, cheap, self-contained check (compare two hostnames),
+in the same spirit as Phase 1's `javascript:`/`data:` scheme restriction: a two-line
+addition to existing validation rather than a new subsystem, kept separate from the
+broader "malicious domain blocklist" idea the master spec calls fully optional and out
+of scope for this build.
+
+### Verified against the real database
+
+- 10 requests from the same IP succeed; the 11th and 12th in the same window return
+  `429` with a `RATE_LIMITED` error code and a `Retry-After` header containing a sane
+  remaining-seconds value.
+- Two different IPs (simulated via `X-Forwarded-For`) are rate-limited fully
+  independently: exhausting one IP's window has no effect on the other's.
+- The `rate_limits` collection's unique index on `key` and TTL index on `expiresAt`
+  (`expireAfterSeconds: 0`) are both confirmed present in Atlas.
+- Shortening `http://<this-app's-own-host>/anything` is rejected with a clear
+  validation error rather than silently creating a link.
