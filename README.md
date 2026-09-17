@@ -56,14 +56,14 @@ Every one of these is real, running code — not aspirational. See
 flowchart TD
     Browser[Browser]
     NextJS[Next.js App Router on Vercel]
-    Mongo[(MongoDB Atlas)]
+    Links[(links: URLs + ownership)]
     Outbox[(outbox_events)]
     GHA[GitHub Actions cron]
     Rollups[(click_stats / referrer_stats)]
     Dashboard[Analytics dashboard]
 
     Browser -- "1. GET a short link" --> NextJS
-    NextJS -- "2. look up destination" --> Mongo
+    NextJS -- "2. look up destination" --> Links
     NextJS -- "3. write click event" --> Outbox
     NextJS -- "4. 302 redirect" --> Browser
 
@@ -81,6 +81,16 @@ different schedule (a GitHub Actions cron job, not triggered by user traffic at 
 a slow or failed analytics run can never make a redirect slower or fail. The dashboard
 (step 8) only ever reads the pre-aggregated rollup collections, never the raw event log,
 so its query cost doesn't grow with how large the outbox backlog gets.
+
+Everything above lives in one MongoDB Atlas cluster, across five collections doing five
+distinct jobs — no separate datastore per concern:
+
+| Collection                       | Holds                                                                                                                                                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `links`                          | short codes, destinations, **and ownership** — there's no separate users/accounts collection, since sessions are JWT-based and store nothing server-side; ownership is just the GitHub account id on the link document itself |
+| `outbox_events`                  | one durable row per click, written synchronously, read only by the drain                                                                                                                                                      |
+| `rate_limits`                    | one counter document per identifier + time window, self-expiring via a TTL index                                                                                                                                              |
+| `click_stats` / `referrer_stats` | the pre-aggregated rollups the dashboard actually reads                                                                                                                                                                       |
 
 ### Request paths, concretely
 
@@ -119,10 +129,9 @@ of the redirect request guarantees it's recorded before the function returns, wh
 keeping the actual aggregation work entirely out of the redirect's critical path.
 
 **Asynchronous analytics via a GitHub Actions cron job, not Vercel Cron** — Vercel's free
-tier limits Cron Jobs to once a day, far too infrequent for anything resembling
-near-real-time analytics. GitHub Actions' scheduled workflows are free and support
-5-minute granularity, so it's used as the external trigger instead, calling a
-secret-protected endpoint.
+tier limits Cron Jobs to once a day, which would leave analytics stale for hours.
+GitHub Actions' scheduled workflows are free and support 5-minute granularity, so it's
+used as the external trigger instead, calling a secret-protected endpoint.
 
 **MongoDB-based rate limiting, not Redis** — a single atomic
 `findOneAndUpdate({key}, {$inc:{count:1}}, {upsert:true})`, keyed by identifier and the

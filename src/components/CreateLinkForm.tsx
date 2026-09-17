@@ -45,7 +45,9 @@ export function CreateLinkForm() {
   }
 
   if (result) {
-    return <ShortLinkResult shortUrl={result.shortUrl} onReset={handleReset} />;
+    return (
+      <ShortLinkResult shortUrl={result.shortUrl} longUrl={result.longUrl} onReset={handleReset} />
+    );
   }
 
   return (

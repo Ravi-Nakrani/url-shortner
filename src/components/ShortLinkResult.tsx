@@ -2,7 +2,15 @@
 
 import { useState } from "react";
 
-export function ShortLinkResult({ shortUrl, onReset }: { shortUrl: string; onReset: () => void }) {
+export function ShortLinkResult({
+  shortUrl,
+  longUrl,
+  onReset,
+}: {
+  shortUrl: string;
+  longUrl: string;
+  onReset: () => void;
+}) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -47,6 +55,10 @@ export function ShortLinkResult({ shortUrl, onReset }: { shortUrl: string; onRes
         >
           Open<span className="sr-only"> (opens in a new tab)</span>
         </a>
+      </div>
+      <div className="mt-5 border-t border-border pt-4">
+        <p className="text-xs font-medium tracking-wide text-text-muted uppercase">Original URL</p>
+        <p className="mt-1 break-all text-sm text-text-muted">{longUrl}</p>
       </div>
       <button
         type="button"

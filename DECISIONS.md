@@ -75,9 +75,13 @@ caching hot `shortCode → longUrl` lookups ahead of the database on the redirec
 `/api/process-outbox` endpoint to drain the outbox, rather than using Vercel's built-in
 Cron Jobs.
 
-**Why**: Vercel's Hobby (free) tier limits Cron Jobs to once per day, which is far too
-infrequent for near-real-time click analytics. GitHub Actions' scheduled workflows are
-free and support minute-level granularity, so it's used as the external trigger instead.
+**Why**: Vercel's Hobby (free) tier limits Cron Jobs to once per day, which would leave
+analytics stale for hours. GitHub Actions' scheduled workflows are free and support
+minute-level granularity, so it's used as the external trigger instead — this avoids
+introducing a dedicated queue/worker service (SQS, a managed Kafka, a standalone cron
+server) while remaining appropriate for a portfolio project on free-tier
+infrastructure. The honest tradeoff: it's polling, not push-based, so latency is bounded
+by the schedule interval, not by how quickly work becomes available.
 
 ### Bounded-batch draining instead of drain-to-completion — _(will be exercised in Phase 3, decision made now)_
 
