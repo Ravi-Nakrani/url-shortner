@@ -154,3 +154,34 @@ validation schema, not a new subsystem.
 Measured against a local dev server with an already-established Atlas connection:
 ~20-50ms per redirect. This is the number Phase 2's outbox-insert overhead and Phase 7's
 Edge Function migration will be compared against.
+
+---
+
+## Phase 2
+
+### Outbox-insert failure does not fail the redirect
+
+**Chosen**: the redirect handler awaits the `outbox_events` insert and logs a timing
+line on success, but wraps the insert in its own `try/catch` — if it throws, the error
+is logged server-side and the redirect proceeds anyway.
+
+**Why**: the user is only ever waiting on the redirect, not on analytics. Making a
+redirect's success depend on a _second_ database write (beyond the lookup that already
+happened) would widen the redirect's failure surface for the sake of click tracking,
+which cuts against the whole point of decoupling analytics from the hot path. The
+accepted cost is that a rare transient Atlas hiccup on that one insert loses a single
+click event rather than failing the user's redirect — a deliberately asymmetric
+tradeoff (protect the primary user-facing action, accept best-effort on the secondary
+one) that's worth being able to defend explicitly if asked.
+
+### Outbox-insert latency measurement
+
+Instrumented with a `console.log` timing line around the insert
+(`[outbox] recorded click for <code> in <ms>`), visible in dev server logs and (after
+deploy) in Vercel function logs. Measured locally: the insert itself takes ~15-35ms;
+end-to-end redirect latency correspondingly moved from the Phase 1 baseline of
+~20-50ms to ~50-80ms. Confirmed via direct collection counts that this insert is never
+lost or duplicated: 15/20-request concurrent bursts against the same and different
+short codes each produced exactly one outbox document per request, and hitting a
+nonexistent short code (404) produces zero outbox documents, since there's no click to
+record without a resolved destination.

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectToDatabase } from "@/lib/db/connect";
 import { findLinkByShortCode } from "@/lib/services/linkService";
+import { recordClickEvent } from "@/lib/services/outboxService";
 import { apiError } from "@/lib/api/errors";
 
 export async function GET(
@@ -15,6 +16,19 @@ export async function GET(
 
     if (!link) {
       return apiError(404, "NOT_FOUND", "This short link does not exist or has expired.");
+    }
+
+    const outboxStart = Date.now();
+    try {
+      await recordClickEvent(shortCode, {
+        referrer: request.headers.get("referer"),
+        userAgent: request.headers.get("user-agent"),
+      });
+      console.log(`[outbox] recorded click for ${shortCode} in ${Date.now() - outboxStart}ms`);
+    } catch (error) {
+      // The redirect is the only thing the user is waiting on; losing one click
+      // event to a transient DB error shouldn't turn into a failed redirect.
+      console.error(`[outbox] failed to record click for ${shortCode}`, error);
     }
 
     return NextResponse.redirect(link.longUrl, 301);
