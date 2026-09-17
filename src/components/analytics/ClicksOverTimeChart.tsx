@@ -52,7 +52,7 @@ export function ClicksOverTimeChart({ data }: { data: DailyClicks[] }) {
               tick={{ fill: "var(--text-muted)", fontSize: 12 }}
               axisLine={{ stroke: "var(--border)" }}
               tickLine={false}
-              interval={Math.ceil(data.length / 6) - 1}
+              interval={Math.ceil(data.length / 5) - 1}
               minTickGap={20}
             />
             <YAxis

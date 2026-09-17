@@ -23,14 +23,14 @@ export async function AuthStatus() {
   }
 
   return (
-    <div className="flex items-center gap-3 text-sm">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
       <Link href="/dashboard" className="text-text-muted underline hover:text-accent">
         My Links
       </Link>
       <Link href="/dashboard/analytics" className="text-text-muted underline hover:text-accent">
         Analytics
       </Link>
-      <span className="text-text-muted">{session.user.name}</span>
+      <span className="hidden text-text-muted sm:inline">{session.user.name}</span>
       <form
         action={async () => {
           "use server";
