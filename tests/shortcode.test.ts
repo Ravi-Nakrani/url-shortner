@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { generateShortCode } from "@/lib/shortcode";
 
 describe("generateShortCode", () => {
@@ -18,5 +18,14 @@ describe("generateShortCode", () => {
   it("produces different codes across calls (probabilistically)", () => {
     const codes = new Set(Array.from({ length: 20 }, () => generateShortCode()));
     expect(codes.size).toBeGreaterThan(1);
+  });
+
+  it("does not derive randomness from Math.random", () => {
+    // Math.random() is not a CSPRNG; short codes should come from
+    // crypto.randomInt instead so they aren't predictable from prior output.
+    const spy = vi.spyOn(Math, "random");
+    generateShortCode();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

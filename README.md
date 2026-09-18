@@ -175,6 +175,12 @@ verification performed against the real database for each one.
   a retried request, could both aggregate the same batch). Closed with a short-lived
   database lock; see [DECISIONS.md](DECISIONS.md#testing--reliability-pass) for how this
   was verified against the real database with genuinely concurrent requests.
+- **A stalled lock holder can't corrupt a newer worker's lock either** — a follow-up
+  hardening pass found that the lock's original release was unconditional: a worker that
+  stalled past its own lease and then resumed could clear a lock a newer worker had
+  since legitimately acquired. Fixed with a per-acquisition fencing token (see
+  [DECISIONS.md](DECISIONS.md#phase-9)) — a worker's release, and its lease renewal
+  inside the drain's own transaction, only succeed while it's still the recorded owner.
 - **A short-link redirect uses `302`, not `301`** — this was actually the opposite
   choice originally, reasoned about only in terms of cacheability. A `301` gets cached by
   the visitor's browser, which means a returning visitor's repeat clicks never reach the
@@ -201,6 +207,21 @@ verification performed against the real database for each one.
   here the way it would be on, say, an auth callback endpoint. What _is_ validated is the
   input at creation time (must be a well-formed `http`/`https` URL, can't point back at
   this app itself).
+- **Short codes come from a CSPRNG**, not `Math.random()` — `crypto.randomInt` isn't
+  predictable from previously issued codes, closing a theoretical short-code-guessing
+  angle. Same base62 alphabet, length, and unique-index-backed collision retry as before.
+- **Rate-limit identification trusts a specific, documented header, not any client-sent
+  one** — `x-vercel-forwarded-for` (falling back to `x-forwarded-for`, then `x-real-ip`)
+  is used as the rate limiter's identifier. On this app's actual deployment (Vercel),
+  these headers are set by Vercel's own edge network, which — per Vercel's docs —
+  overwrites `x-forwarded-for` and does not forward client-supplied values, specifically
+  to prevent IP spoofing. A client rotating an arbitrary header value can't rotate past
+  this on the real deployment; locally (`npm run dev`, no Vercel edge in front), any
+  header value is trivially forgeable, which is an accepted, dev-only limitation.
+- **A small, verified-compatible set of security headers** on every response:
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`,
+  and `Strict-Transport-Security` in production. No `Content-Security-Policy` — see
+  [Tradeoffs & Limitations](#tradeoffs--limitations) for why.
 - **Not currently implemented** (worth naming rather than pretending they don't matter):
   no phishing/malware destination scanning on the URLs people shorten, no abuse-reporting
   flow, and rate limiting is a single-node-friendly MongoDB counter rather than a
@@ -209,20 +230,22 @@ verification performed against the real database for each one.
 
 ## Testing
 
-80 tests across 10 files (`npm test`), covering the business logic that actually matters
+97 tests across 12 files (`npm test`), covering the business logic that actually matters
 rather than chasing a coverage percentage: short-code generation and collision retry,
 URL validation (including rejecting `javascript:`/`data:`), link creation and per-owner
 deduplication, ownership-scoped update/delete (both at the service layer and, separately,
 at the HTTP route layer — confirming an unauthenticated request never reaches the
-database and a wrong-owner request gets a plain 404), rate limiting's atomic
-upsert, the redirect route's actual HTTP behavior (status code, click recording, a
-styled 404 for a missing or expired link, click-tracking failures not breaking the
-redirect), and the outbox drain's crash/retry/lock-contention behavior. See
-[DECISIONS.md](DECISIONS.md#testing--reliability-pass) for the specific gaps this found
-and closed.
+database and a wrong-owner request gets a plain 404), rate limiting's atomic upsert and
+its client-IP header trust order, the redirect route's actual HTTP behavior (status
+code, click recording, a styled 404 for a missing or expired link, click-tracking
+failures not breaking the redirect), the outbox drain's crash/retry/lock-contention
+behavior — including the stale-worker fencing scenario below — and the security headers
+config. See [DECISIONS.md](DECISIONS.md#testing--reliability-pass) for the specific
+gaps a previous audit found and closed, and [DECISIONS.md](DECISIONS.md#phase-9) for
+this hardening pass's regression tests.
 
 ```
-Tests:     56/56 → 80/80 across the project's lifetime, all passing
+Tests:     56/56 → 97/97 across the project's lifetime, all passing
 Typecheck: tsc --noEmit, clean
 Lint:      ESLint (Next.js config), clean
 Build:     next build, clean production build
@@ -259,6 +282,14 @@ Being honest about what this _isn't_:
   SQS/Kafka/a managed queue. That's a deliberate scope decision for a project meant to
   demonstrate the _pattern_ on one piece of infrastructure, not a claim that this is how
   you'd build it at real scale.
+- **No Content-Security-Policy** — deliberately not added in the security-headers
+  hardening pass rather than shipped as a fake/permissive one just to have a CSP present.
+  A meaningful CSP here would need nonce plumbing through the root layout for Next.js App
+  Router's own inline hydration scripts, plus either removing or hashing the redirect
+  route's hand-rolled 404 page's inline `<style>` block
+  ([src/lib/http/notFoundPage.ts](src/lib/http/notFoundPage.ts)) — real, non-trivial
+  changes to the rendering path, not a one-line header addition. Named as a gap here
+  rather than silently skipped.
 - **The repository/package name is `url-shortner`** (missing an "e") while the product
   is titled "URL Shortener" everywhere else — a naming slip caught late. Left as-is
   rather than renamed, since renaming a GitHub repo with a live Vercel deployment

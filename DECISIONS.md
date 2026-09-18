@@ -719,3 +719,183 @@ and were already covered), `typecheck`, `lint`, and `next build` all pass locall
 placeholder Google credentials in `.env.local`. The real OAuth handshake itself (Google's consent screen, the callback
 redirect) has not been exercised end-to-end against a real Google Cloud OAuth client, the
 same limitation Phase 5 already noted for GitHub's local OAuth flow.
+
+---
+
+## Phase 9
+
+A focused backend-hardening audit, targeting four specific areas rather than a general
+rewrite: the outbox drain lock, rate-limit IP identification, short-code randomness, and
+security response headers.
+
+### Outbox drain lock: fencing tokens close a real stale-worker corruption race
+
+**The gap, found by auditing the exact scenario asked about**: Worker A acquires the
+lock → stalls past its 2-minute lease → Worker B acquires the lock in the meantime →
+Worker A resumes. Before this fix, `releaseDrainLock()` was `DrainLock.updateOne({_id:
+DRAIN_LOCK_ID}, {$set: {lockedUntil: new Date(0)}})` — unconditional on who currently
+held the lock. Worker A's `finally` block would run this on resume and immediately
+expire whatever lock document existed at that moment — Worker B's still-active lock,
+not Worker A's own. A third worker (the next scheduled tick, or a manual
+`workflow_dispatch` retry) could then acquire the lock while Worker B was still actively
+draining, restoring the exact double-counting risk the lock exists to prevent. Worse:
+if Worker A had already fetched its own batch of events before stalling, resuming and
+completing its own transaction later would blindly `$inc` the rollup collections again
+for events Worker B may have already aggregated — the lock's mutual exclusion alone
+doesn't prevent a stale worker's own in-flight computation from committing after being
+superseded.
+
+**Chosen**: a per-acquisition fencing token (`crypto.randomUUID()`), following the
+pattern this audit was asked to consider. `acquireDrainLock()` now returns the token (or
+`null`) instead of a boolean, and stores it as `owner` on the lock document.
+`releaseDrainLock(owner)` only clears the lock via `updateOne({_id, owner}, ...)` — if
+a newer worker's token is now stored, this filter matches nothing and the newer lock is
+left completely untouched. More importantly, a **second** ownership check —
+`renewLockOrThrow(owner, session)` — runs as the _first_ operation inside the drain's
+existing MongoDB transaction, before any rollup `bulkWrite`. It renews the lease via the
+same `{_id, owner}`-filtered `updateOne`, but now _inside_ the same transaction as the
+`$inc` writes: if the filter matches zero documents (ownership was lost), it throws, the
+whole transaction — including the rollup increments — is rolled back, and `drainOutbox`
+catches this specific `LockLostError` and returns a benign no-op result rather than
+surfacing it as a failure to the GitHub Actions caller. This closes both halves of the
+gap: the lock document itself can't be corrupted by a stale release, and a stale
+worker's rollup writes can't land even if it manages to resume mid-transaction, because
+committing requires proving — atomically, as part of the same commit — that it's still
+the current owner.
+
+**Why inside the transaction, not just checked beforehand**: a check-then-write outside
+the transaction would leave a window between "confirmed we still own the lock" and "the
+rollup writes actually landed," which a resumed stale worker could still fall into.
+Doing the ownership renewal as a write inside the same transaction as the rollup writes
+means MongoDB's own transaction atomicity — already relied on for the
+processed-flag/rollup consistency guarantee from Phase 3 — extends to cover "we still
+owned the lock at commit time" as well, for free.
+
+**Lease duration left unchanged**: audited whether 2 minutes is still reasonable for a
+200-event bounded batch (explicitly asked not to just increase the timeout and call it
+solved). Phase 3's verification showed a real 6-event batch draining in ~14ms and 200
+events processing well within the schedule interval; 2 minutes remains comfortably
+generous, and the fix here doesn't depend on the exact duration — it's correct for any
+lease length, including one that's occasionally too short for an unusually slow drain.
+
+**Verified**: three new regression tests in `tests/outboxDrainService.test.ts`
+simulating the exact named scenario (a `DrainLock.updateOne` call resolving with
+`matchedCount: 0`, standing in for "a newer worker's token is already there"): the
+transaction aborts before any `ClickStats`/`ReferrerStats`/`OutboxEvent` write happens,
+`drainOutbox` resolves with a zero-work result rather than rejecting, and a stale
+worker's release call is confirmed to match zero documents rather than touching the
+newer lock. All 14 tests in that file (11 existing + 3 new) pass, along with the full
+97-test suite, typecheck, lint, and build.
+
+**Residual, explicitly named limitation**: fencing prevents a stale worker's writes from
+committing once superseded, but it does not prevent two workers from briefly doing
+redundant _read_ work (both fetching an overlapping unprocessed batch) in the window
+between a lease expiring and a stale worker discovering it's been superseded. That
+redundant work is simply thrown away (the stale worker's transaction aborts), not
+double-counted — the correctness guarantee holds, only the "no wasted work" property
+doesn't, which this project has never claimed.
+
+### Rate-limit IP identification: a documented, deployment-specific trust boundary
+
+**The gap**: `getClientIp` trusted `x-forwarded-for` (first comma-separated entry) with
+no documentation of why that header can be trusted, and no fallback ordering that
+accounts for this app's actual, single deployment target (Vercel).
+
+**Chosen**: check `x-vercel-forwarded-for` first, then `x-forwarded-for`, then
+`x-real-ip`, falling back to the literal string `"unknown"`. Verified directly against
+Vercel's own documentation (`vercel.com/docs/headers/request-headers`) rather than
+assumed: Vercel's edge network "overwrite[s] the X-Forwarded-For header and do[es] not
+forward external IPs... to prevent IP spoofing" for every request that reaches this
+app (the one exception being Vercel's paid Trusted Proxy add-on, not used here) — so on
+the actual deployment, a client cannot rotate this header to dodge the rate limiter.
+`x-vercel-forwarded-for` is preferred because Vercel documents it as staying
+authoritative even if something in front of Vercel were to rewrite `x-forwarded-for`
+itself. Also fixed a smaller bug found in the same audit: a malformed header value
+(e.g. `","`) previously could produce an empty-string identifier after
+`.split(",")[0].trim()`, silently bucketing unrelated malformed requests into the same
+rate-limit key; the parser now skips blank entries and falls through to the next
+header/`"unknown"` instead.
+
+**The trust boundary, stated honestly**: this holds in production because Vercel's edge
+is the only path to this app. It does **not** hold under `npm run dev` — there is no
+Vercel edge in front of a local server, so any header value is fully attacker-controlled
+locally. That's a named, accepted, dev-only limitation, not a production gap.
+
+**Verified**: 8 new tests in `tests/getClientIp.test.ts` covering a normal single-IP
+header, a comma-separated chain (first entry wins), `x-vercel-forwarded-for` taking
+precedence over `x-forwarded-for` when both are present, `x-real-ip` fallback, no
+headers at all (`"unknown"`), and malformed/blank header values falling through rather
+than producing an empty-string identifier. What isn't testable in a unit test — that
+Vercel's edge actually strips a client-supplied `x-forwarded-for` before this code ever
+runs — is a platform guarantee documented above and cited to its source rather than
+simulated.
+
+### Short-code generation: `crypto.randomInt` instead of `Math.random()`
+
+**Chosen**: `generateShortCode` now pulls each base62 character from
+`crypto.randomInt(BASE62_ALPHABET.length)` instead of
+`Math.floor(Math.random() * BASE62_ALPHABET.length)`. Same alphabet, same default
+length (7), same collision-retry contract with `linkService.createLink` — only the
+randomness source changed.
+
+**Why**: `Math.random()`'s underlying PRNG is not cryptographically secure; given enough
+observed output it is possible in principle to reconstruct its internal state and
+predict future values. For a feature whose entire security property is "you can't guess
+someone else's short link," using a CSPRNG closes that theoretical gap at zero cost —
+`crypto.randomInt` has the same synchronous, drop-in call shape as the code it replaced.
+
+**Verified**: all existing `tests/shortcode.test.ts` tests pass unchanged (format,
+length, and uniqueness assertions didn't need to change, since none of that behavior
+changed), plus one new test asserting `Math.random` is never called during generation.
+
+### Security response headers
+
+**Chosen**: `next.config.ts`'s `headers()` now returns, on every route:
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: strict-origin-when-cross-origin`, and
+`Permissions-Policy: camera=(), microphone=(), geolocation=()` unconditionally, plus
+`Strict-Transport-Security: max-age=63072000; includeSubDomains` only when
+`NODE_ENV === "production"` (a local `next dev` server is plain HTTP, where the header
+is meaningless).
+
+**Verified compatible before adding**: ran a production build and started the built app
+locally, then `curl`'d the homepage, the redirect route's 404 page, and the
+`/dashboard` unauthenticated-redirect — confirmed all headers present, the 404 page's
+existing inline-styled body still rendered, and the auth redirect still worked.
+
+**Content-Security-Policy deliberately not added**: this app's root layout depends on
+Next.js App Router's own inline hydration scripts, and
+[src/lib/http/notFoundPage.ts](src/lib/http/notFoundPage.ts) is a hand-rolled HTML
+`Response` (not a React-rendered page) with a real inline `<style>` block for the
+redirect route's 404 page. A CSP strict enough to be worth having would need nonce
+plumbing through the root layout (for Next's scripts) and either removing that inline
+style block or hashing it — real changes to the rendering path, not a header addition.
+The task for this pass was explicit that a fake or overly permissive CSP is worse than
+none; this is named here as a gap rather than worked around with `unsafe-inline`, which
+would defeat the point of having a CSP at all.
+
+**Verified**: 5 new tests in `tests/securityHeaders.test.ts` call `next.config.ts`'s
+exported `headers()` function directly (it's a plain async function, not something
+requiring a running server to exercise) — asserting the baseline headers are always
+present, HSTS is present only when `NODE_ENV=production`, and no
+`Content-Security-Policy` is emitted.
+
+### What this audit did not change
+
+- **MongoDB connection caching** (`src/lib/db/connect.ts`): reviewed against the exact
+  failure modes asked about (warm-instance reuse, concurrent first-connection races). The
+  existing pattern — caching the in-flight `Promise` on `globalThis`, not just the
+  resolved connection — is already correct: two concurrent invocations both run their
+  synchronous code (including the `cache.promise = mongoose.connect(...)` assignment)
+  before either yields at `await`, so the second invocation always observes the first's
+  promise already set. No change made.
+- **Ownership scoping, input validation, transaction/session lifecycle elsewhere**:
+  reviewed and found already correct (see Phases 0–6 above); nothing here warranted a
+  change under this pass's "smallest change necessary" scope.
+- **The cross-provider identity gap from Phase 8** (no linking between a GitHub and a
+  Google account for the same person) was reviewed again as part of this audit and left
+  as previously decided — it's a real, already-documented tradeoff, not a new finding,
+  and fixing it isn't a small change.
+
+**Result**: 97 tests across 12 files (up from 80 across 10), all passing; typecheck,
+lint, and build all clean. No existing test was weakened or removed to get there.

@@ -86,7 +86,7 @@ describe("drainOutbox", () => {
     endSessionMock.mockReset().mockResolvedValue(undefined);
     drainMetaFindOneAndUpdateMock.mockReset().mockResolvedValue({});
     drainLockFindOneAndUpdateMock.mockReset().mockResolvedValue({});
-    drainLockUpdateOneMock.mockReset().mockResolvedValue({});
+    drainLockUpdateOneMock.mockReset().mockResolvedValue({ matchedCount: 1 });
 
     withTransactionMock.mockImplementation(async (fn: () => Promise<void>) => {
       await fn();
@@ -266,8 +266,21 @@ describe("drainOutbox", () => {
     await drainOutbox(200);
 
     expect(drainLockFindOneAndUpdateMock).toHaveBeenCalledTimes(1);
-    expect(drainLockUpdateOneMock).toHaveBeenCalledWith(
-      { _id: "drain_lock" },
+    const [, acquireUpdate] = drainLockFindOneAndUpdateMock.mock.calls[0];
+    const owner = acquireUpdate.$set.owner;
+    expect(typeof owner).toBe("string");
+
+    // Two updateOne calls: renewing the lease inside the transaction, then
+    // the final release — both fenced on this invocation's owner token.
+    expect(drainLockUpdateOneMock).toHaveBeenNthCalledWith(
+      1,
+      { _id: "drain_lock", owner },
+      { $set: { lockedUntil: expect.any(Date) } },
+      { session: expect.anything() },
+    );
+    expect(drainLockUpdateOneMock).toHaveBeenNthCalledWith(
+      2,
+      { _id: "drain_lock", owner },
       { $set: { lockedUntil: expect.any(Date) } },
     );
   });
@@ -289,5 +302,51 @@ describe("drainOutbox", () => {
 
     expect(result.processedCount).toBe(1);
     expect(clickStatsBulkWriteMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe("stale-worker lock fencing", () => {
+    // Regression test for the exact race this lock exists to prevent:
+    // Worker A acquires the lock, stalls past its own lease expiry, Worker B
+    // acquires the lock in the meantime, and Worker A finally resumes. A
+    // stale worker must not be able to commit rollup writes or corrupt the
+    // newer worker's lock, even though it still believes it holds it.
+    it("aborts the transaction without writing any rollups when the lock was reclaimed mid-drain", async () => {
+      findMock.mockReturnValue(makeChainableFind([makeEvent()]));
+      // Simulates Worker B having reclaimed the lock (a different owner is
+      // now stored) by the time Worker A's in-transaction renewal runs.
+      drainLockUpdateOneMock.mockResolvedValueOnce({ matchedCount: 0 });
+
+      const result = await drainOutbox(200);
+
+      expect(result).toEqual({ processedCount: 0, groupsUpdated: 0, tookMs: expect.any(Number) });
+      // The stale worker's writes never happened — no double-counting.
+      expect(clickStatsBulkWriteMock).not.toHaveBeenCalled();
+      expect(referrerStatsBulkWriteMock).not.toHaveBeenCalled();
+      expect(updateManyMock).not.toHaveBeenCalled();
+    });
+
+    it("does not report the reclaimed-lock case as an error to the caller", async () => {
+      findMock.mockReturnValue(makeChainableFind([makeEvent()]));
+      drainLockUpdateOneMock.mockResolvedValueOnce({ matchedCount: 0 });
+
+      await expect(drainOutbox(200)).resolves.not.toThrow();
+    });
+
+    it("a stale worker's own release call cannot clear a lock a newer worker now owns", async () => {
+      findMock.mockReturnValue(makeChainableFind([]));
+      // Empty backlog short-circuits before the in-transaction renewal, so
+      // this isolates the release call itself: by the time Worker A's
+      // `finally` block runs, Worker B has already overwritten the owner,
+      // so Worker A's fenced release matches nothing.
+      drainLockUpdateOneMock.mockResolvedValueOnce({ matchedCount: 0 });
+
+      await drainOutbox(200);
+
+      const [releaseFilter] = drainLockUpdateOneMock.mock.calls[0];
+      expect(releaseFilter).toEqual({ _id: "drain_lock", owner: expect.any(String) });
+      // The call was made (attempted), but matched zero documents — Worker
+      // B's lock document, with its own owner, was left completely intact.
+      expect(drainLockUpdateOneMock).toHaveResolvedWith({ matchedCount: 0 });
+    });
   });
 });
