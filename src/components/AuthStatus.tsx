@@ -6,19 +6,34 @@ export async function AuthStatus() {
 
   if (!session?.user) {
     return (
-      <form
-        action={async () => {
-          "use server";
-          await signIn("github");
-        }}
-      >
-        <button
-          type="submit"
-          className="rounded border border-border px-3 py-1.5 text-sm font-medium text-text transition-colors hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      <div className="flex items-center gap-2">
+        <form
+          action={async () => {
+            "use server";
+            await signIn("github");
+          }}
         >
-          Sign in with GitHub
-        </button>
-      </form>
+          <button
+            type="submit"
+            className="rounded border border-border px-3 py-1.5 text-sm font-medium text-text transition-colors hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            Sign in with GitHub
+          </button>
+        </form>
+        <form
+          action={async () => {
+            "use server";
+            await signIn("google");
+          }}
+        >
+          <button
+            type="submit"
+            className="rounded border border-border px-3 py-1.5 text-sm font-medium text-text transition-colors hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            Sign in with Google
+          </button>
+        </form>
+      </div>
     );
   }
 

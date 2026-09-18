@@ -32,4 +32,6 @@ jobs:
           AUTH_SECRET: ci-placeholder-auth-secret-value
           AUTH_GITHUB_ID: ci-placeholder-id
           AUTH_GITHUB_SECRET: ci-placeholder-secret
+          AUTH_GOOGLE_ID: ci-placeholder-id
+          AUTH_GOOGLE_SECRET: ci-placeholder-secret
         run: npm test

@@ -6,6 +6,8 @@ const envSchema = z.object({
   AUTH_SECRET: z.string().min(16, { message: "AUTH_SECRET must be at least 16 characters" }),
   AUTH_GITHUB_ID: z.string().min(1, { message: "AUTH_GITHUB_ID is required" }),
   AUTH_GITHUB_SECRET: z.string().min(1, { message: "AUTH_GITHUB_SECRET is required" }),
+  AUTH_GOOGLE_ID: z.string().min(1, { message: "AUTH_GOOGLE_ID is required" }),
+  AUTH_GOOGLE_SECRET: z.string().min(1, { message: "AUTH_GOOGLE_SECRET is required" }),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 });
 

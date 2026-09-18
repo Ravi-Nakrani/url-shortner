@@ -660,3 +660,62 @@ pass; everything else added tests around existing code untouched.
 
 **Result**: 76 tests across 10 files (up from 56 across 7), all passing; typecheck, lint,
 and build all clean. No existing test was weakened or removed to get there.
+
+---
+
+## Phase 8
+
+### Google added as a second OAuth provider, no account linking
+
+**Chosen**: `next-auth/providers/google` added to `auth.ts`'s `providers` array alongside
+`GitHub`, bare (no inline config object) — same pattern already used for GitHub, relying
+on NextAuth's `AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET` env-var convention. `env.ts`'s zod
+schema now requires both, matching how `AUTH_GITHUB_ID`/`AUTH_GITHUB_SECRET` were already
+required — consistent with this project's existing fail-fast-at-import philosophy rather
+than making the new provider's config silently optional.
+
+**Why Google specifically**: the brief was a free, popup-based sign-in with no form to
+fill out — ruling out anything requiring a paid developer account (Apple, at $99/year).
+Among the free OAuth options NextAuth supports out of the box (Google, Discord, GitLab,
+Microsoft, Facebook, LinkedIn, Twitch), Google was chosen because it needs no separate
+signup step for almost any visitor — most already have a Google account signed into
+their browser — which matters specifically for a portfolio project a recruiter or
+interviewer might try in passing.
+
+**The account-identity tradeoff, stated explicitly**: `jwtCallback` sets
+`token.userId = account.providerAccountId` unchanged from Phase 5 — it does not
+namespace the id by provider (e.g. `github:123` vs. `google:123`). Two consequences,
+both accepted rather than fixed:
+
+- **No identity merging across providers**: the same person signing in with GitHub and
+  then with Google is treated as two unrelated owners with two separate "My Links"
+  lists — there's no shared-email lookup or account-linking step. Adding that would mean
+  either a database adapter (the second-MongoDB-client cost Phase 5 already rejected) or
+  a custom `signIn` callback that looks up existing links by email, which is real added
+  complexity for a portfolio-scale app with no actual multi-provider users to merge.
+- **A theoretical cross-provider id collision**: GitHub's `providerAccountId` and
+  Google's are both plain numeric strings from two independent id spaces, so — in
+  principle, if not in any realistic practice — two different humans on two different
+  providers could theoretically be issued colliding raw account ids, silently sharing
+  one `userId` and one link list. Namespacing `userId` as `${provider}:${providerAccountId}`
+  would close this outright, but doing so now would change the `userId` format for every
+  already-existing GitHub-owned link in production, orphaning that data from its real
+  owner without a migration step. Left as-is and named here rather than "fixed" silently
+  at the cost of breaking real user data for a risk this project has no evidence of ever
+  materializing.
+
+**Deployment note**: since `env.ts` is imported at request-handling time by
+`src/lib/db/connect.ts` (used on almost every route), adding a new required env var here
+means the existing Vercel deployment needs `AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET` added
+before the next deploy, or every DB-touching request — not just sign-in — starts failing
+at startup. Confirmed locally: `next build` fails immediately with a descriptive
+`AUTH_GOOGLE_ID: Invalid input: expected string, received undefined` error when the vars
+are absent, exactly the fail-fast behavior this schema exists to provide.
+
+**Verified**: `npm test` (80/80 unchanged — this addition only updated
+`tests/auth.test.ts`'s existing provider mocks to also stub `next-auth/providers/google`,
+rather than adding new tests, since `jwtCallback`/`sessionCallback` are provider-agnostic
+and were already covered), `typecheck`, `lint`, and `next build` all pass locally with
+placeholder Google credentials in `.env.local`. The real OAuth handshake itself (Google's consent screen, the callback
+redirect) has not been exercised end-to-end against a real Google Cloud OAuth client, the
+same limitation Phase 5 already noted for GitHub's local OAuth flow.

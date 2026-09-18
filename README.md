@@ -45,8 +45,8 @@ to answer honestly, including the places I initially got something wrong and fix
   precise, honest version of this claim)
 - **Asynchronous analytics** — clicks over time, top referrers, and a per-link
   breakdown, computed by a background worker decoupled from the redirect path
-- **Authentication & ownership** — sign in with GitHub to keep your links private and
-  see their analytics; every read and write is scoped to the signed-in owner
+- **Authentication & ownership** — sign in with GitHub or Google to keep your links
+  private and see their analytics; every read and write is scoped to the signed-in owner
 - **Rate limiting** on link creation, to keep the free tier from being trivially abused
 - **Input validation** — URLs are parsed and restricted to `http`/`https` before a link
   is ever created, rejecting `javascript:`/`data:` payloads outright
@@ -93,12 +93,12 @@ grow with how large the outbox backlog gets.
 Everything above lives in one MongoDB Atlas cluster, across five collections doing five
 distinct jobs — no separate datastore per concern:
 
-| Collection                       | Holds                                                                                                                                                                                                                         |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `links`                          | short codes, destinations, **and ownership** — there's no separate users/accounts collection, since sessions are JWT-based and store nothing server-side; ownership is just the GitHub account id on the link document itself |
-| `outbox_events`                  | one durable row per click, written synchronously, read only by the drain                                                                                                                                                      |
-| `rate_limits`                    | one counter document per identifier + time window, self-expiring via a TTL index                                                                                                                                              |
-| `click_stats` / `referrer_stats` | the pre-aggregated rollups the dashboard actually reads                                                                                                                                                                       |
+| Collection                       | Holds                                                                                                                                                                                                                                       |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `links`                          | short codes, destinations, **and ownership** — there's no separate users/accounts collection, since sessions are JWT-based and store nothing server-side; ownership is just the signed-in provider's account id on the link document itself |
+| `outbox_events`                  | one durable row per click, written synchronously, read only by the drain                                                                                                                                                                    |
+| `rate_limits`                    | one counter document per identifier + time window, self-expiring via a TTL index                                                                                                                                                            |
+| `click_stats` / `referrer_stats` | the pre-aggregated rollups the dashboard actually reads                                                                                                                                                                                     |
 
 ### Request paths, concretely
 
@@ -237,6 +237,11 @@ Being honest about what this _isn't_:
   Local sign-in therefore doesn't work out of the box; local development exercises
   everything except the authenticated flows unless you register your own dev OAuth App
   (instructions below).
+- **No account linking across providers** — `userId` is just the signed-in provider's
+  raw account id (`account.providerAccountId`), with no adapter and no shared-email
+  merge step. The same person signing in with GitHub and then with Google gets two
+  independent identities and two separate "My Links" lists, not one merged account —
+  a direct consequence of the JWT-only, no-database-adapter design chosen in Phase 5.
 - **`outbox_events` grows without bound** — processed events are kept, not deleted, to
   preserve the raw per-click record for reprocessing if the aggregation logic ever
   changes. At real scale, this needs a TTL index expiring processed events after a
@@ -281,11 +286,19 @@ Being honest about what this _isn't_:
    allow access from anywhere (`0.0.0.0/0`) under Network Access — Vercel's serverless
    functions don't have a fixed IP.
 
-3. **(Optional) Create a GitHub OAuth App** if you want to exercise sign-in locally
-   (GitHub → Settings → Developer settings → OAuth Apps → New OAuth App): Homepage URL
-   `http://localhost:3000`, Authorization callback URL
-   `http://localhost:3000/api/auth/callback/github`. Without this, everything except
-   sign-in works locally.
+3. **(Optional) Create GitHub and/or Google OAuth credentials** if you want to exercise
+   sign-in locally:
+   - **GitHub** (GitHub → Settings → Developer settings → OAuth Apps → New OAuth App):
+     Homepage URL `http://localhost:3000`, Authorization callback URL
+     `http://localhost:3000/api/auth/callback/github`.
+   - **Google** (Google Cloud Console → APIs & Services → Credentials → Create
+     Credentials → OAuth client ID → Web application): Authorized redirect URI
+     `http://localhost:3000/api/auth/callback/google`.
+
+   Both env vars are still required for the app to start even if you skip this step —
+   any placeholder string satisfies the startup validation, it just means that
+   provider's sign-in button won't work. Without real credentials, everything except
+   the authenticated flows works locally.
 
 4. **Configure environment variables**
 
@@ -297,7 +310,10 @@ Being honest about what this _isn't_:
    - `MONGODB_URI` — your Atlas connection string.
    - `OUTBOX_SECRET` — any random string (e.g. `openssl rand -hex 32`).
    - `AUTH_SECRET` — `openssl rand -base64 32`.
-   - `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` — from the OAuth App above, if created.
+   - `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` — from the GitHub OAuth App above, if
+     created (any non-empty placeholder otherwise).
+   - `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` — from the Google OAuth client above, if
+     created (any non-empty placeholder otherwise).
 
 5. **Run the dev server**
 
@@ -327,8 +343,9 @@ staged files.
 ### Deployment
 
 Deployed on Vercel. Set `MONGODB_URI`, `OUTBOX_SECRET`, `AUTH_SECRET`, `AUTH_GITHUB_ID`,
-and `AUTH_GITHUB_SECRET` in the Vercel project's environment variables (using a
-production GitHub OAuth App's credentials, not a dev app's).
+`AUTH_GITHUB_SECRET`, `AUTH_GOOGLE_ID`, and `AUTH_GOOGLE_SECRET` in the Vercel project's
+environment variables (using the production OAuth App/client credentials for each
+provider, not the dev ones).
 
 The outbox-drain scheduler (`.github/workflows/drain-outbox.yml`) needs two GitHub
 Actions repository secrets (Settings → Secrets and variables → Actions): `APP_URL`

@@ -4,6 +4,7 @@ vi.mock("next-auth", () => ({
   default: vi.fn(() => ({ handlers: {}, auth: vi.fn(), signIn: vi.fn(), signOut: vi.fn() })),
 }));
 vi.mock("next-auth/providers/github", () => ({ default: vi.fn() }));
+vi.mock("next-auth/providers/google", () => ({ default: vi.fn() }));
 
 const { jwtCallback, sessionCallback } = await import("@/auth");
 
