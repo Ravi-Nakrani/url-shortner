@@ -37,6 +37,9 @@ to answer honestly, including the places I initially got something wrong and fix
 ## Features
 
 - **Link shortening** with collision-safe short codes and per-owner duplicate detection
+- **Optional link expiry** — an owner can set or clear an expiration date; an expired
+  short code redirects the same way a nonexistent one does (a plain 404), rather than
+  leaking that the code once existed
 - **Durable click tracking** — click events are persisted to a durable outbox before
   the redirect, whenever the write succeeds (see [Reliability](#reliability) for the
   precise, honest version of this claim)
@@ -206,20 +209,20 @@ verification performed against the real database for each one.
 
 ## Testing
 
-76 tests across 10 files (`npm test`), covering the business logic that actually matters
+80 tests across 10 files (`npm test`), covering the business logic that actually matters
 rather than chasing a coverage percentage: short-code generation and collision retry,
 URL validation (including rejecting `javascript:`/`data:`), link creation and per-owner
 deduplication, ownership-scoped update/delete (both at the service layer and, separately,
 at the HTTP route layer — confirming an unauthenticated request never reaches the
 database and a wrong-owner request gets a plain 404), rate limiting's atomic
 upsert, the redirect route's actual HTTP behavior (status code, click recording, a
-styled 404 for a missing link, click-tracking failures not breaking the redirect), and
-the outbox drain's crash/retry/lock-contention behavior. See
+styled 404 for a missing or expired link, click-tracking failures not breaking the
+redirect), and the outbox drain's crash/retry/lock-contention behavior. See
 [DECISIONS.md](DECISIONS.md#testing--reliability-pass) for the specific gaps this found
 and closed.
 
 ```
-Tests:     56/56 → 76/76 across the project's lifetime, all passing
+Tests:     56/56 → 80/80 across the project's lifetime, all passing
 Typecheck: tsc --noEmit, clean
 Lint:      ESLint (Next.js config), clean
 Build:     next build, clean production build
